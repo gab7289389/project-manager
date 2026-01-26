@@ -20,7 +20,8 @@ export default async function handler(req, res) {
     const fileList = files.map(f => `• ${f.type}`).join('\n');
 
     const { data, error } = await resend.emails.send({
-      from: 'onboarding@resend.dev', // Change to your verified domain
+      from: 'DXTR Notifications <notif@send.dxtr.au>',
+      replyTo: 'contact@dxtr.au',
       to: [to],
       subject: `Your files are ready: ${projectName}`,
       html: `
