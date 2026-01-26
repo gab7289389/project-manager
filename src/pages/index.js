@@ -171,7 +171,7 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     finally { setSaving(false); }
   };
 
-  // Optimistic revision add
+  // Optimistic revision add - no page refresh
   const addRevision = async (projectId, data) => {
     const tempId = 'temp-' + Date.now();
     const tempRevision = { id: tempId, type: data.type, note: data.note || 'Revision requested' };
@@ -189,13 +189,36 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     }));
     
     try {
-      await db.createRevision({ project_id: projectId, type: data.type, note: data.note || 'Revision requested' }, [
+      const result = await db.createRevision({ project_id: projectId, type: data.type, note: data.note || 'Revision requested' }, [
         { project_id: projectId, text: `Submit ${data.type} Revision to editor`, is_editor_task: true },
         { project_id: projectId, text: `Submit ${data.type} Revision to client`, is_client_task: true }
       ]);
-      // Refresh to get real IDs
-      await refreshData();
-    } catch (e) { console.error(e); alert('Error'); await refreshData(); }
+      
+      // Update with real IDs from database without full refresh
+      if (result && result.revision && result.tasks) {
+        setProjects(prev => prev.map(p => {
+          if (p.id !== projectId) return p;
+          return {
+            ...p,
+            revisions: p.revisions.map(r => r.id === tempId ? { ...r, id: result.revision.id } : r),
+            tasks: p.tasks.map(t => {
+              if (t.id === tempId + '-1') return { ...t, ...result.tasks[0] };
+              if (t.id === tempId + '-2') return { ...t, ...result.tasks[1] };
+              return t;
+            })
+          };
+        }));
+      }
+    } catch (e) { 
+      console.error(e); 
+      alert('Error adding revision'); 
+      // Revert on error
+      setProjects(prev => prev.map(p => p.id !== projectId ? p : {
+        ...p,
+        revisions: p.revisions.filter(r => r.id !== tempId),
+        tasks: p.tasks.filter(t => !t.id.startsWith(tempId))
+      }));
+    }
   };
 
   // Optimistic revision update
