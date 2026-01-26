@@ -150,13 +150,18 @@ export const createRevision = async (revision, tasks) => {
   if (revisionError) throw revisionError;
   
   // Create associated tasks
+  let createdTasks = [];
   if (tasks.length > 0) {
     const tasksWithIds = tasks.map(t => ({ ...t, revision_id: revisionData.id }));
-    const { error: tasksError } = await supabase.from('tasks').insert(tasksWithIds);
+    const { data: tasksData, error: tasksError } = await supabase
+      .from('tasks')
+      .insert(tasksWithIds)
+      .select();
     if (tasksError) throw tasksError;
+    createdTasks = tasksData || [];
   }
   
-  return revisionData;
+  return { revision: revisionData, tasks: createdTasks };
 };
 
 export const updateRevision = async (id, updates) => {
