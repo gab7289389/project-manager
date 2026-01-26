@@ -171,14 +171,86 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     finally { setSaving(false); }
   };
 
+  // Optimistic revision add
   const addRevision = async (projectId, data) => {
+    const tempId = 'temp-' + Date.now();
+    const tempRevision = { id: tempId, type: data.type, note: data.note || 'Revision requested' };
+    const tempTasks = [
+      { id: tempId + '-1', text: `Submit ${data.type} Revision to editor`, is_editor_task: true, is_client_task: false, completed: false },
+      { id: tempId + '-2', text: `Submit ${data.type} Revision to client`, is_editor_task: false, is_client_task: true, completed: false }
+    ];
+    
+    // Optimistic update
+    setProjects(prev => prev.map(p => p.id !== projectId ? p : {
+      ...p,
+      status: 'revision',
+      revisions: [...(p.revisions || []), tempRevision],
+      tasks: [...(p.tasks || []), ...tempTasks]
+    }));
+    
     try {
       await db.createRevision({ project_id: projectId, type: data.type, note: data.note || 'Revision requested' }, [
         { project_id: projectId, text: `Submit ${data.type} Revision to editor`, is_editor_task: true },
         { project_id: projectId, text: `Submit ${data.type} Revision to client`, is_client_task: true }
       ]);
+      // Refresh to get real IDs
       await refreshData();
-    } catch (e) { console.error(e); alert('Error'); }
+    } catch (e) { console.error(e); alert('Error'); await refreshData(); }
+  };
+
+  // Optimistic revision update
+  const updateRevision = async (revisionId, data) => {
+    setProjects(prev => prev.map(p => ({
+      ...p,
+      revisions: p.revisions?.map(r => r.id === revisionId ? { ...r, ...data } : r)
+    })));
+    try { await db.updateRevision(revisionId, data); } catch (e) { console.error(e); await refreshData(); }
+  };
+
+  // Optimistic revision delete
+  const deleteRevision = async (revisionId) => {
+    setProjects(prev => prev.map(p => ({
+      ...p,
+      revisions: p.revisions?.filter(r => r.id !== revisionId)
+    })));
+    try { await db.deleteRevision(revisionId); } catch (e) { console.error(e); await refreshData(); }
+  };
+
+  // Optimistic client notes update
+  const updateClientNotes = async (clientId, notes) => {
+    setClients(prev => prev.map(c => c.id === clientId ? { ...c, notes } : c));
+    try { await db.updateClient(clientId, { notes }); } catch (e) { console.error(e); await refreshData(); }
+  };
+
+  // Optimistic project update
+  const updateProject = async (projectId, updates) => {
+    setProjects(prev => prev.map(p => p.id === projectId ? { ...p, ...updates } : p));
+    try { await db.updateProject(projectId, updates); } catch (e) { console.error(e); await refreshData(); }
+  };
+
+  // Optimistic project delete
+  const deleteProject = async (projectId) => {
+    setProjects(prev => prev.filter(p => p.id !== projectId));
+    setExpanded(null);
+    try { await db.deleteProject(projectId); } catch (e) { console.error(e); await refreshData(); }
+  };
+
+  // Optimistic project create
+  const createProject = async (projectData, tasks) => {
+    const tempId = 'temp-' + Date.now();
+    const tempProject = {
+      id: tempId,
+      ...projectData,
+      status: 'progress',
+      tasks: tasks.map((t, i) => ({ id: tempId + '-' + i, ...t, completed: false })),
+      revisions: [],
+      client: clients.find(c => c.id === projectData.client_id)
+    };
+    setProjects(prev => [tempProject, ...prev]);
+    try {
+      await db.createProject(projectData, tasks);
+      await refreshData();
+    } catch (e) { console.error(e); alert('Error'); await refreshData(); }
   };
 
   return (
@@ -260,40 +332,83 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
           </>
         )}
         {tab === 'chat' && <div className="flex-1 flex items-center justify-center text-gray-400"><div className="text-center"><p className="text-4xl mb-2">💬</p><p>Chat coming soon</p></div></div>}
-        {tab === 'database' && <Database clients={clients} services={services} editors={editors} setSidebarOpen={setSidebarOpen} refreshData={refreshData} />}
+        {tab === 'database' && <Database clients={clients} setClients={setClients} services={services} setServices={setServices} editors={editors} setEditors={setEditors} setSidebarOpen={setSidebarOpen} refreshData={refreshData} />}
       </main>
 
-      {modal?.type === 'addProject' && <AddProjectModal clients={clients} services={services} onClose={() => setModal(null)} onCreate={async (p, t) => { try { await db.createProject(p, t); await refreshData(); setModal(null); } catch (e) { alert('Error'); } }} />}
-      {modal?.type === 'editProject' && <EditProjectModal project={modal.project} clients={clients} onClose={() => setModal(null)} onSave={async (u) => { try { await db.updateProject(modal.project.id, u); await refreshData(); setModal(null); } catch (e) { alert('Error'); } }} />}
+      {modal?.type === 'addProject' && <AddProjectModal clients={clients} services={services} onClose={() => setModal(null)} onCreate={async (p, t) => { await createProject(p, t); setModal(null); }} />}
+      {modal?.type === 'editProject' && <EditProjectModal project={modal.project} clients={clients} onClose={() => setModal(null)} onSave={async (u) => { await updateProject(modal.project.id, u); setModal(null); }} />}
       {modal?.type === 'addRevision' && <AddRevisionModal serviceTypes={modal.serviceTypes} onClose={() => setModal(null)} onSave={async (d) => { await addRevision(modal.project.id, d); setModal(null); }} />}
-      {modal?.type === 'editRevision' && <EditRevisionModal revision={modal.revision} serviceTypes={modal.serviceTypes} onClose={() => setModal(null)} onSave={async (d) => { try { await db.updateRevision(modal.revision.id, d); await refreshData(); setModal(null); } catch (e) { alert('Error'); } }} onDelete={async () => { try { await db.deleteRevision(modal.revision.id); await refreshData(); setModal(null); } catch (e) { alert('Error'); } }} />}
-      {modal?.type === 'editNotes' && <EditNotesModal client={modal.client} onClose={() => setModal(null)} onSave={async (n) => { try { await db.updateClient(modal.client.id, { notes: n }); await refreshData(); setModal(null); } catch (e) { alert('Error'); } }} />}
-      {modal?.type === 'deleteProject' && <DeleteProjectModal project={modal.project} onClose={() => setModal(null)} onDelete={async () => { try { await db.deleteProject(modal.project.id); await refreshData(); setExpanded(null); setModal(null); } catch (e) { alert('Error'); } }} />}
+      {modal?.type === 'editRevision' && <EditRevisionModal revision={modal.revision} serviceTypes={modal.serviceTypes} onClose={() => setModal(null)} onSave={async (d) => { await updateRevision(modal.revision.id, d); setModal(null); }} onDelete={async () => { await deleteRevision(modal.revision.id); setModal(null); }} />}
+      {modal?.type === 'editNotes' && <EditNotesModal client={modal.client} onClose={() => setModal(null)} onSave={async (n) => { await updateClientNotes(modal.client.id, n); setModal(null); }} />}
+      {modal?.type === 'deleteProject' && <DeleteProjectModal project={modal.project} onClose={() => setModal(null)} onDelete={async () => { await deleteProject(modal.project.id); setModal(null); }} />}
       {modal?.type === 'sendToClient' && <SendToClientModal project={modal.project} tasks={modal.tasks} client={modal.client} onClose={() => setModal(null)} onSend={async (ids) => { const ok = await sendToClient(modal.project, ids, modal.client); if (ok) setModal(null); }} />}
     </div>
   );
 }
 
-function Database({ clients, services, editors, setSidebarOpen, refreshData }) {
+function Database({ clients, setClients, services, setServices, editors, setEditors, setSidebarOpen, refreshData }) {
   const [tab, setTab] = useState('clients');
   const [modal, setModal] = useState(null);
+  
   const handleSave = async (type, item, isEdit) => {
+    const tempId = 'temp-' + Date.now();
     try {
-      if (type === 'clients') { if (isEdit) await db.updateClient(item.id, item); else await db.createNewClient(item); }
-      else if (type === 'services') { if (isEdit) await db.updateService(item.id, item); else await db.createService(item); }
-      else if (type === 'editors') { if (isEdit) await db.updateEditor(item.id, item); else await db.createEditor(item); }
-      await refreshData(); setModal(null);
-    } catch (e) { alert('Error: ' + e.message); }
+      if (type === 'clients') {
+        if (isEdit) {
+          setClients(prev => prev.map(c => c.id === item.id ? { ...c, ...item } : c));
+          await db.updateClient(item.id, item);
+        } else {
+          setClients(prev => [...prev, { ...item, id: tempId }]);
+          await db.createNewClient(item);
+          await refreshData();
+        }
+      } else if (type === 'services') {
+        if (isEdit) {
+          setServices(prev => prev.map(s => s.id === item.id ? { ...s, ...item } : s));
+          await db.updateService(item.id, item);
+        } else {
+          setServices(prev => [...prev, { ...item, id: tempId }]);
+          await db.createService(item);
+          await refreshData();
+        }
+      } else if (type === 'editors') {
+        if (isEdit) {
+          setEditors(prev => prev.map(e => e.id === item.id ? { ...e, ...item } : e));
+          await db.updateEditor(item.id, item);
+        } else {
+          setEditors(prev => [...prev, { ...item, id: tempId }]);
+          await db.createEditor(item);
+          await refreshData();
+        }
+      }
+      setModal(null);
+    } catch (e) { 
+      console.error(e);
+      alert('Error: ' + e.message); 
+      await refreshData();
+    }
   };
+  
   const handleDelete = async (type, id) => {
     if (!confirm('Delete?')) return;
     try {
-      if (type === 'clients') await db.deleteClient(id);
-      else if (type === 'services') await db.deleteService(id);
-      else if (type === 'editors') await db.deleteEditor(id);
+      if (type === 'clients') {
+        setClients(prev => prev.filter(c => c.id !== id));
+        await db.deleteClient(id);
+      } else if (type === 'services') {
+        setServices(prev => prev.filter(s => s.id !== id));
+        await db.deleteService(id);
+      } else if (type === 'editors') {
+        setEditors(prev => prev.filter(e => e.id !== id));
+        await db.deleteEditor(id);
+      }
+    } catch (e) { 
+      console.error(e);
+      alert('Error'); 
       await refreshData();
-    } catch (e) { alert('Error'); }
+    }
   };
+  
   const data = tab === 'clients' ? clients : tab === 'services' ? services : editors;
   return (
     <div className="flex-1 overflow-auto">
