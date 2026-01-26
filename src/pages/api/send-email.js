@@ -20,7 +20,7 @@ export default async function handler(req, res) {
     const fileList = files.map(f => `• ${f.type}`).join('\n');
 
     const { data, error } = await resend.emails.send({
-      from: 'Project Manager <noreply@yourdomain.com>', // Change to your verified domain
+      from: 'onboarding@resend.dev', // Change to your verified domain
       to: [to],
       subject: `Your files are ready: ${projectName}`,
       html: `
