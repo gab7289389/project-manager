@@ -36,16 +36,33 @@ export default function DownloadPage() {
     loadData();
   }, [token]);
 
-  const handleDownload = (file) => {
+  const handleDownload = async (file) => {
     setDownloaded(prev => ({ ...prev, [file.id]: true }));
-    window.open(file.url, '_blank');
+    
+    try {
+      // Fetch the file and force download
+      const response = await fetch(file.url);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.name || 'download';
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (err) {
+      // Fallback to opening in new tab if fetch fails
+      console.error('Download error:', err);
+      window.open(file.url, '_blank');
+    }
   };
 
   const handleDownloadAll = () => {
     data.files.forEach((file, index) => {
       setTimeout(() => {
         handleDownload(file);
-      }, index * 500);
+      }, index * 1000); // Increased delay for multiple downloads
     });
   };
 
