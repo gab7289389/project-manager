@@ -1,6 +1,7 @@
 import { Resend } from 'resend';
 
 const resend = new Resend(process.env.RESEND_API_KEY);
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -21,42 +22,59 @@ export default async function handler(req, res) {
         ? from.match(/<(.+)>/)?.[1] || from 
         : from;
 
-      // Get email content
-      const { data: email, error: emailError } = await resend.emails.receiving.get(emailId);
-      
-      if (emailError) {
-        console.error('Error fetching email:', emailError);
+      // Get email content using REST API
+      let emailHtml = '';
+      let emailText = '';
+      try {
+        const emailRes = await fetch(`https://api.resend.com/emails/${emailId}/content`, {
+          headers: { 'Authorization': `Bearer ${RESEND_API_KEY}` }
+        });
+        if (emailRes.ok) {
+          const emailData = await emailRes.json();
+          emailHtml = emailData.html || '';
+          emailText = emailData.text || '';
+          console.log('Fetched email content');
+        } else {
+          console.log('Failed to fetch email content:', emailRes.status);
+        }
+      } catch (err) {
+        console.log('Error fetching email content:', err.message);
       }
 
-      // Get attachments
-      const { data: attachmentData, error: attachmentError } = await resend.attachments.receiving.list({ 
-        emailId: emailId 
-      });
-
-      if (attachmentError) {
-        console.error('Error fetching attachments:', attachmentError);
-      }
-
-      // Download attachments and encode in base64
+      // Get attachments using REST API
       let attachments = [];
-      if (attachmentData && attachmentData.data && attachmentData.data.length > 0) {
-        for (const attachment of attachmentData.data) {
-          try {
-            const response = await fetch(attachment.download_url);
-            const buffer = Buffer.from(await response.arrayBuffer());
-            attachments.push({
-              filename: attachment.filename,
-              content: buffer.toString('base64')
-            });
-            console.log(`Downloaded attachment: ${attachment.filename}`);
-          } catch (dlErr) {
-            console.error(`Failed to download ${attachment.filename}:`, dlErr);
+      try {
+        const attRes = await fetch(`https://api.resend.com/emails/${emailId}/attachments`, {
+          headers: { 'Authorization': `Bearer ${RESEND_API_KEY}` }
+        });
+        if (attRes.ok) {
+          const attData = await attRes.json();
+          const attList = attData.data || attData || [];
+          
+          for (const att of attList) {
+            if (att.download_url) {
+              try {
+                const dlRes = await fetch(att.download_url);
+                if (dlRes.ok) {
+                  const buffer = Buffer.from(await dlRes.arrayBuffer());
+                  attachments.push({
+                    filename: att.filename || 'attachment',
+                    content: buffer.toString('base64')
+                  });
+                  console.log(`Downloaded: ${att.filename}`);
+                }
+              } catch (dlErr) {
+                console.log(`Failed to download ${att.filename}`);
+              }
+            }
           }
         }
+      } catch (err) {
+        console.log('Error fetching attachments:', err.message);
       }
 
-      // Forward the email
-      const { data: sendData, error: sendError } = await resend.emails.send({
+      // Forward the email using SDK (this part works)
+      const sendPayload = {
         from: 'DXTR Notifications <notif@send.dxtr.au>',
         to: ['contact@dxtr.au'],
         subject: `📧 Reply from ${fromEmail}: ${subject}`,
@@ -71,20 +89,25 @@ export default async function handler(req, res) {
             ${attachments.length > 0 ? `<br/><strong>📎 Attachments:</strong> ${attachments.length} file(s) attached` : ''}
           </div>
           <div style="padding: 20px; border: 1px solid #ddd; border-radius: 8px;">
-            ${email?.html || email?.text || '<p>No content</p>'}
+            ${emailHtml || emailText || '<p style="color:#666;">No content available</p>'}
           </div>
         `,
-        text: `CLIENT REPLY FROM: ${fromEmail}\n\nSubject: ${subject}\n\nMessage:\n${email?.text || 'No content'}`,
-        attachments: attachments.length > 0 ? attachments : undefined
-      });
+        text: `CLIENT REPLY FROM: ${fromEmail}\n\nSubject: ${subject}\n\nMessage:\n${emailText || 'No content'}`
+      };
 
-      if (sendError) {
-        console.error('Error sending email:', sendError);
-        return res.status(500).json({ error: sendError });
+      if (attachments.length > 0) {
+        sendPayload.attachments = attachments;
+      }
+
+      const { data, error } = await resend.emails.send(sendPayload);
+
+      if (error) {
+        console.error('Error sending email:', error);
+        return res.status(500).json({ error });
       }
 
       console.log(`Email forwarded from: ${fromEmail} with ${attachments.length} attachments`);
-      return res.status(200).json({ success: true, emailId: sendData?.id });
+      return res.status(200).json({ success: true, emailId: data?.id });
     }
 
     return res.status(200).json({ success: true });
