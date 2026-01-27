@@ -21,7 +21,7 @@ export default async function handler(req, res) {
 
     const { data, error } = await resend.emails.send({
       from: 'DXTR Notifications <notif@send.dxtr.au>',
-      replyTo: 'contact@dxtr.au',
+      replyTo: ['contact@dxtr.au'],
       to: [to],
       subject: `Your files are ready: ${projectName}`,
       html: `
