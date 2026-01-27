@@ -8,77 +8,58 @@ export default async function handler(req, res) {
   }
 
   try {
-    const payload = req.body;
-    console.log('Webhook received:', JSON.stringify(payload, null, 2));
+    const event = req.body;
+    console.log('Webhook received:', JSON.stringify(event, null, 2));
 
-    const type = payload.type;
-    const data = payload.data || payload;
-    const emailId = data.email_id || data.id;
-
-    // Handle incoming email events
-    if (type === 'email.received' && emailId) {
-      const from = data.from || '';
-      const subject = data.subject || '(No subject)';
+    if (event.type === 'email.received') {
+      const emailId = event.data.email_id;
+      const from = event.data.from || '';
+      const subject = event.data.subject || '(No subject)';
       
       // Extract email address from "Name <email>" format
       const fromEmail = from.includes('<') 
         ? from.match(/<(.+)>/)?.[1] || from 
         : from;
 
-      // Fetch full email content using the Receiving API
-      let emailContent = '';
+      // Get email content
+      const { data: email, error: emailError } = await resend.emails.receiving.get(emailId);
       
-      try {
-        const { data: fullEmail, error: fetchError } = await resend.emails.receiving.get(emailId);
-        
-        if (!fetchError && fullEmail) {
-          emailContent = fullEmail.html || fullEmail.text || '';
-          console.log('Fetched email content successfully');
-        }
-      } catch (fetchErr) {
-        console.log('Could not fetch email content:', fetchErr.message);
+      if (emailError) {
+        console.error('Error fetching email:', emailError);
       }
 
-      // Fetch and download attachments
+      // Get attachments
+      const { data: attachmentData, error: attachmentError } = await resend.attachments.receiving.list({ 
+        emailId: emailId 
+      });
+
+      if (attachmentError) {
+        console.error('Error fetching attachments:', attachmentError);
+      }
+
+      // Download attachments and encode in base64
       let attachments = [];
-      try {
-        const { data: attachmentList, error: attachmentError } = await resend.emails.receiving.attachments.list({ 
-          emailId: emailId 
-        });
-        
-        if (!attachmentError && attachmentList && attachmentList.length > 0) {
-          console.log(`Found ${attachmentList.length} attachments`);
-          
-          for (const att of attachmentList) {
-            try {
-              const response = await fetch(att.download_url);
-              if (response.ok) {
-                const buffer = Buffer.from(await response.arrayBuffer());
-                attachments.push({
-                  filename: att.filename || 'attachment',
-                  content: buffer.toString('base64'),
-                });
-                console.log(`Downloaded attachment: ${att.filename}`);
-              }
-            } catch (dlErr) {
-              console.log(`Failed to download ${att.filename}:`, dlErr.message);
-            }
+      if (attachmentData && attachmentData.data && attachmentData.data.length > 0) {
+        for (const attachment of attachmentData.data) {
+          try {
+            const response = await fetch(attachment.download_url);
+            const buffer = Buffer.from(await response.arrayBuffer());
+            attachments.push({
+              filename: attachment.filename,
+              content: buffer.toString('base64')
+            });
+            console.log(`Downloaded attachment: ${attachment.filename}`);
+          } catch (dlErr) {
+            console.error(`Failed to download ${attachment.filename}:`, dlErr);
           }
         }
-      } catch (attErr) {
-        console.log('Could not fetch attachments:', attErr.message);
       }
 
-      // If no content from API, show helpful message
-      if (!emailContent) {
-        emailContent = `<p style="color:#666;font-style:italic;">Email content could not be retrieved. Please contact the client directly at ${fromEmail}</p>`;
-      }
-      
-      // Forward the email to contact@dxtr.au with attachments
-      const emailPayload = {
+      // Forward the email
+      const { data: sendData, error: sendError } = await resend.emails.send({
         from: 'DXTR Notifications <notif@send.dxtr.au>',
         to: ['contact@dxtr.au'],
-        subject: `📧 Reply from ${fromEmail}`,
+        subject: `📧 Reply from ${fromEmail}: ${subject}`,
         html: `
           <div style="padding: 20px; background: #7c3aed; color: white; margin-bottom: 20px;">
             <h2 style="margin: 0 0 10px 0;">📧 Client Reply</h2>
@@ -87,23 +68,23 @@ export default async function handler(req, res) {
           </div>
           <div style="padding: 15px; background: #f5f5f5; margin-bottom: 20px;">
             <strong>Original Subject:</strong> ${subject}
-            ${attachments.length > 0 ? `<br/><strong>📎 Attachments:</strong> ${attachments.length} file(s) attached below` : ''}
+            ${attachments.length > 0 ? `<br/><strong>📎 Attachments:</strong> ${attachments.length} file(s) attached` : ''}
           </div>
           <div style="padding: 20px; border: 1px solid #ddd; border-radius: 8px;">
-            ${emailContent}
+            ${email?.html || email?.text || '<p>No content</p>'}
           </div>
         `,
-        text: `CLIENT REPLY FROM: ${fromEmail}\n\nSubject: ${subject}\n\nMessage:\n${emailContent.replace(/<[^>]*>/g, '')}`
-      };
+        text: `CLIENT REPLY FROM: ${fromEmail}\n\nSubject: ${subject}\n\nMessage:\n${email?.text || 'No content'}`,
+        attachments: attachments.length > 0 ? attachments : undefined
+      });
 
-      // Add attachments if any
-      if (attachments.length > 0) {
-        emailPayload.attachments = attachments;
+      if (sendError) {
+        console.error('Error sending email:', sendError);
+        return res.status(500).json({ error: sendError });
       }
 
-      await resend.emails.send(emailPayload);
-
       console.log(`Email forwarded from: ${fromEmail} with ${attachments.length} attachments`);
+      return res.status(200).json({ success: true, emailId: sendData?.id });
     }
 
     return res.status(200).json({ success: true });
