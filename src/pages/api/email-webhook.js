@@ -14,25 +14,30 @@ export default async function handler(req, res) {
     if (type === 'email.received') {
       const { from, to, subject, text, html } = data;
       
-      // Forward the email to contact@dxtr.au
+      // Extract email address from "Name <email>" format if needed
+      const fromEmail = from.includes('<') 
+        ? from.match(/<(.+)>/)?.[1] || from 
+        : from;
+      
+      // Forward the email to contact@dxtr.au with original sender as Reply-To
       await resend.emails.send({
         from: 'DXTR Notifications <notif@send.dxtr.au>',
+        replyTo: [fromEmail],
         to: ['contact@dxtr.au'],
-        subject: `Fwd: ${subject}`,
+        subject: `Fwd: ${subject} (from ${fromEmail})`,
         html: `
-          <div style="padding: 20px; background: #f5f5f5; border-radius: 8px; margin-bottom: 20px;">
-            <p style="margin: 0; color: #666;"><strong>From:</strong> ${from}</p>
-            <p style="margin: 0; color: #666;"><strong>To:</strong> ${to}</p>
-            <p style="margin: 0; color: #666;"><strong>Subject:</strong> ${subject}</p>
+          <div style="padding: 15px; background: #f0f0f0; border-left: 4px solid #7c3aed; margin-bottom: 20px;">
+            <p style="margin: 0 0 5px 0; color: #333;"><strong>Reply directly to this email to respond to the client</strong></p>
+            <p style="margin: 0; color: #666; font-size: 14px;">Original sender: ${from}</p>
           </div>
-          <div style="padding: 20px;">
+          <div style="padding: 10px 0;">
             ${html || text || 'No content'}
           </div>
         `,
-        text: `From: ${from}\nTo: ${to}\nSubject: ${subject}\n\n${text || 'No content'}`
+        text: `[Reply directly to respond to: ${fromEmail}]\n\nFrom: ${from}\nSubject: ${subject}\n\n${text || 'No content'}`
       });
 
-      console.log('Email forwarded successfully');
+      console.log('Email forwarded successfully from:', fromEmail);
     }
 
     return res.status(200).json({ success: true });
