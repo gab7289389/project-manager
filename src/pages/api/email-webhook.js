@@ -8,36 +8,52 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { type, data } = req.body;
+    const payload = req.body;
+    
+    // Log the full payload to see structure
+    console.log('Webhook payload:', JSON.stringify(payload, null, 2));
+
+    const type = payload.type;
+    const data = payload.data || payload;
 
     // Handle incoming email events
-    if (type === 'email.received') {
-      const { from, to, subject, text, html } = data;
+    if (type === 'email.received' || data.from) {
+      // Try multiple possible field names
+      const from = data.from || data.sender || data.from_email || '';
+      const subject = data.subject || data.email_subject || '(No subject)';
+      const text = data.text || data.body || data.plain || data.text_body || '';
+      const html = data.html || data.html_body || data.body_html || '';
+      const content = html || text || JSON.stringify(data);
       
       // Extract email address from "Name <email>" format if needed
       const fromEmail = from.includes('<') 
         ? from.match(/<(.+)>/)?.[1] || from 
         : from;
       
-      // Forward the email to contact@dxtr.au with original sender as Reply-To
+      // Forward the email to contact@dxtr.au
+      // Put client email prominently in subject so you can copy it
       await resend.emails.send({
         from: 'DXTR Notifications <notif@send.dxtr.au>',
-        replyTo: [fromEmail],
         to: ['contact@dxtr.au'],
-        subject: `Fwd: ${subject} (from ${fromEmail})`,
+        subject: `Client Reply from: ${fromEmail} - ${subject}`,
         html: `
-          <div style="padding: 15px; background: #f0f0f0; border-left: 4px solid #7c3aed; margin-bottom: 20px;">
-            <p style="margin: 0 0 5px 0; color: #333;"><strong>Reply directly to this email to respond to the client</strong></p>
-            <p style="margin: 0; color: #666; font-size: 14px;">Original sender: ${from}</p>
+          <div style="padding: 20px; background: #7c3aed; color: white; margin-bottom: 20px;">
+            <h2 style="margin: 0 0 10px 0;">📧 Client Reply</h2>
+            <p style="margin: 0; font-size: 18px;"><strong>From: ${fromEmail}</strong></p>
+            <p style="margin: 10px 0 0 0; font-size: 14px; opacity: 0.9;">Copy the email above to reply directly to the client</p>
           </div>
-          <div style="padding: 10px 0;">
-            ${html || text || 'No content'}
+          <div style="padding: 20px; background: #f5f5f5; border-radius: 8px; margin-bottom: 20px;">
+            <p style="margin: 0;"><strong>Subject:</strong> ${subject}</p>
+          </div>
+          <div style="padding: 20px; border: 1px solid #ddd; border-radius: 8px;">
+            <h3 style="margin: 0 0 15px 0; color: #666;">Message:</h3>
+            ${content}
           </div>
         `,
-        text: `[Reply directly to respond to: ${fromEmail}]\n\nFrom: ${from}\nSubject: ${subject}\n\n${text || 'No content'}`
+        text: `CLIENT REPLY\n\nFrom: ${fromEmail}\nSubject: ${subject}\n\n---MESSAGE---\n${text || content}`
       });
 
-      console.log('Email forwarded successfully from:', fromEmail);
+      console.log('Email forwarded from:', fromEmail);
     }
 
     return res.status(200).json({ success: true });
