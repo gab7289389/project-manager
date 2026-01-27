@@ -9,36 +9,73 @@ export default async function handler(req, res) {
 
   try {
     const payload = req.body;
-    
-    // Log the full payload to debug
-    console.log('Full webhook payload:', JSON.stringify(payload, null, 2));
+    console.log('Webhook received:', JSON.stringify(payload, null, 2));
 
-    // Resend webhook structure: { type, created_at, data: { ... } }
     const type = payload.type;
     const data = payload.data || payload;
+    const emailId = data.email_id || data.id;
 
     // Handle incoming email events
-    if (type === 'email.received' || type === 'email.delivered' || data.from) {
+    if (type === 'email.received' && emailId) {
       const from = data.from || '';
       const subject = data.subject || '(No subject)';
       
-      // For Resend inbound emails, the body might be in these fields
-      const text = data.text || data.body || data.plain_body || data.text_plain || '';
-      const html = data.html || data.html_body || data.body_html || '';
-      
-      // If still no content, show the raw data for debugging
-      let content = html || text;
-      if (!content || content.trim() === '') {
-        content = `<pre style="background:#f5f5f5;padding:15px;border-radius:8px;overflow:auto;font-size:12px;">${JSON.stringify(data, null, 2)}</pre>`;
-      }
-      
-      // Extract email address from "Name <email>" format if needed
+      // Extract email address from "Name <email>" format
       const fromEmail = from.includes('<') 
         ? from.match(/<(.+)>/)?.[1] || from 
         : from;
+
+      // Fetch full email content using the Receiving API
+      let emailContent = '';
       
-      // Forward the email to contact@dxtr.au
-      await resend.emails.send({
+      try {
+        const { data: fullEmail, error: fetchError } = await resend.emails.receiving.get(emailId);
+        
+        if (!fetchError && fullEmail) {
+          emailContent = fullEmail.html || fullEmail.text || '';
+          console.log('Fetched email content successfully');
+        }
+      } catch (fetchErr) {
+        console.log('Could not fetch email content:', fetchErr.message);
+      }
+
+      // Fetch and download attachments
+      let attachments = [];
+      try {
+        const { data: attachmentList, error: attachmentError } = await resend.emails.receiving.attachments.list({ 
+          emailId: emailId 
+        });
+        
+        if (!attachmentError && attachmentList && attachmentList.length > 0) {
+          console.log(`Found ${attachmentList.length} attachments`);
+          
+          for (const att of attachmentList) {
+            try {
+              const response = await fetch(att.download_url);
+              if (response.ok) {
+                const buffer = Buffer.from(await response.arrayBuffer());
+                attachments.push({
+                  filename: att.filename || 'attachment',
+                  content: buffer.toString('base64'),
+                });
+                console.log(`Downloaded attachment: ${att.filename}`);
+              }
+            } catch (dlErr) {
+              console.log(`Failed to download ${att.filename}:`, dlErr.message);
+            }
+          }
+        }
+      } catch (attErr) {
+        console.log('Could not fetch attachments:', attErr.message);
+      }
+
+      // If no content from API, show helpful message
+      if (!emailContent) {
+        emailContent = `<p style="color:#666;font-style:italic;">Email content could not be retrieved. Please contact the client directly at ${fromEmail}</p>`;
+      }
+      
+      // Forward the email to contact@dxtr.au with attachments
+      const emailPayload = {
         from: 'DXTR Notifications <notif@send.dxtr.au>',
         to: ['contact@dxtr.au'],
         subject: `📧 Reply from ${fromEmail}`,
@@ -50,15 +87,23 @@ export default async function handler(req, res) {
           </div>
           <div style="padding: 15px; background: #f5f5f5; margin-bottom: 20px;">
             <strong>Original Subject:</strong> ${subject}
+            ${attachments.length > 0 ? `<br/><strong>📎 Attachments:</strong> ${attachments.length} file(s) attached below` : ''}
           </div>
           <div style="padding: 20px; border: 1px solid #ddd; border-radius: 8px;">
-            ${content}
+            ${emailContent}
           </div>
         `,
-        text: `CLIENT REPLY FROM: ${fromEmail}\n\nSubject: ${subject}\n\nMessage:\n${text || 'See HTML version'}`
-      });
+        text: `CLIENT REPLY FROM: ${fromEmail}\n\nSubject: ${subject}\n\nMessage:\n${emailContent.replace(/<[^>]*>/g, '')}`
+      };
 
-      console.log('Email forwarded from:', fromEmail);
+      // Add attachments if any
+      if (attachments.length > 0) {
+        emailPayload.attachments = attachments;
+      }
+
+      await resend.emails.send(emailPayload);
+
+      console.log(`Email forwarded from: ${fromEmail} with ${attachments.length} attachments`);
     }
 
     return res.status(200).json({ success: true });
