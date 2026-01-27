@@ -10,20 +10,27 @@ export default async function handler(req, res) {
   try {
     const payload = req.body;
     
-    // Log the full payload to see structure
-    console.log('Webhook payload:', JSON.stringify(payload, null, 2));
+    // Log the full payload to debug
+    console.log('Full webhook payload:', JSON.stringify(payload, null, 2));
 
+    // Resend webhook structure: { type, created_at, data: { ... } }
     const type = payload.type;
     const data = payload.data || payload;
 
     // Handle incoming email events
-    if (type === 'email.received' || data.from) {
-      // Try multiple possible field names
-      const from = data.from || data.sender || data.from_email || '';
-      const subject = data.subject || data.email_subject || '(No subject)';
-      const text = data.text || data.body || data.plain || data.text_body || '';
+    if (type === 'email.received' || type === 'email.delivered' || data.from) {
+      const from = data.from || '';
+      const subject = data.subject || '(No subject)';
+      
+      // For Resend inbound emails, the body might be in these fields
+      const text = data.text || data.body || data.plain_body || data.text_plain || '';
       const html = data.html || data.html_body || data.body_html || '';
-      const content = html || text || JSON.stringify(data);
+      
+      // If still no content, show the raw data for debugging
+      let content = html || text;
+      if (!content || content.trim() === '') {
+        content = `<pre style="background:#f5f5f5;padding:15px;border-radius:8px;overflow:auto;font-size:12px;">${JSON.stringify(data, null, 2)}</pre>`;
+      }
       
       // Extract email address from "Name <email>" format if needed
       const fromEmail = from.includes('<') 
@@ -31,26 +38,24 @@ export default async function handler(req, res) {
         : from;
       
       // Forward the email to contact@dxtr.au
-      // Put client email prominently in subject so you can copy it
       await resend.emails.send({
         from: 'DXTR Notifications <notif@send.dxtr.au>',
         to: ['contact@dxtr.au'],
-        subject: `Client Reply from: ${fromEmail} - ${subject}`,
+        subject: `📧 Reply from ${fromEmail}`,
         html: `
           <div style="padding: 20px; background: #7c3aed; color: white; margin-bottom: 20px;">
             <h2 style="margin: 0 0 10px 0;">📧 Client Reply</h2>
-            <p style="margin: 0; font-size: 18px;"><strong>From: ${fromEmail}</strong></p>
-            <p style="margin: 10px 0 0 0; font-size: 14px; opacity: 0.9;">Copy the email above to reply directly to the client</p>
+            <p style="margin: 0; font-size: 20px;"><strong>${fromEmail}</strong></p>
+            <p style="margin: 10px 0 0 0; font-size: 14px; opacity: 0.9;">↑ Copy this email to reply to the client</p>
           </div>
-          <div style="padding: 20px; background: #f5f5f5; border-radius: 8px; margin-bottom: 20px;">
-            <p style="margin: 0;"><strong>Subject:</strong> ${subject}</p>
+          <div style="padding: 15px; background: #f5f5f5; margin-bottom: 20px;">
+            <strong>Original Subject:</strong> ${subject}
           </div>
           <div style="padding: 20px; border: 1px solid #ddd; border-radius: 8px;">
-            <h3 style="margin: 0 0 15px 0; color: #666;">Message:</h3>
             ${content}
           </div>
         `,
-        text: `CLIENT REPLY\n\nFrom: ${fromEmail}\nSubject: ${subject}\n\n---MESSAGE---\n${text || content}`
+        text: `CLIENT REPLY FROM: ${fromEmail}\n\nSubject: ${subject}\n\nMessage:\n${text || 'See HTML version'}`
       });
 
       console.log('Email forwarded from:', fromEmail);
