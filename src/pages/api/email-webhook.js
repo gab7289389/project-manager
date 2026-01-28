@@ -8,9 +8,6 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // Return 200 immediately to prevent webhook retries
-  res.status(200).json({ received: true });
-
   try {
     const event = req.body;
     console.log('Webhook received:', event.type);
@@ -36,6 +33,9 @@ export default async function handler(req, res) {
           const data = await emailRes.json();
           emailHtml = data.html || '';
           emailText = data.text || '';
+          console.log('Fetched email content');
+        } else {
+          console.log('Content fetch failed:', emailRes.status);
         }
       } catch (err) {
         console.log('Error fetching content:', err.message);
@@ -50,6 +50,7 @@ export default async function handler(req, res) {
         if (attRes.ok) {
           const attData = await attRes.json();
           const attList = attData.data || attData || [];
+          console.log('Found attachments:', attList.length);
           
           for (const att of attList) {
             if (att.download_url) {
@@ -61,6 +62,7 @@ export default async function handler(req, res) {
                     filename: att.filename || 'attachment',
                     content: buffer.toString('base64')
                   });
+                  console.log('Downloaded:', att.filename);
                 }
               } catch (dlErr) {
                 console.log('Failed to download:', att.filename);
@@ -73,43 +75,47 @@ export default async function handler(req, res) {
       }
 
       // Send the forwarded email
-      try {
-        const sendPayload = {
-          from: 'DXTR Notifications <notif@send.dxtr.au>',
-          to: ['contact@dxtr.au'],
-          subject: `📧 Reply from ${fromEmail}: ${subject}`,
-          html: `
-            <div style="padding: 20px; background: #7c3aed; color: white; margin-bottom: 20px;">
-              <h2 style="margin: 0 0 10px 0;">📧 Client Reply</h2>
-              <p style="margin: 0; font-size: 20px;"><strong>${fromEmail}</strong></p>
-              <p style="margin: 10px 0 0 0; font-size: 14px; opacity: 0.9;">↑ Copy this email to reply to the client</p>
-            </div>
-            <div style="padding: 15px; background: #f5f5f5; margin-bottom: 20px;">
-              <strong>Subject:</strong> ${subject}
-              ${attachments.length > 0 ? `<br/><strong>📎 Attachments:</strong> ${attachments.length} file(s) attached` : ''}
-            </div>
-            <div style="padding: 20px; border: 1px solid #ddd; border-radius: 8px;">
-              ${emailHtml || emailText || '<p style="color:#666;">No message content</p>'}
-            </div>
-          `,
-          text: `Client Reply from ${fromEmail}\n\nSubject: ${subject}\n\n${emailText || 'No message content'}`
-        };
+      const sendPayload = {
+        from: 'DXTR Notifications <notif@send.dxtr.au>',
+        to: ['contact@dxtr.au'],
+        subject: `📧 Reply from ${fromEmail}: ${subject}`,
+        html: `
+          <div style="padding: 20px; background: #7c3aed; color: white; margin-bottom: 20px;">
+            <h2 style="margin: 0 0 10px 0;">📧 Client Reply</h2>
+            <p style="margin: 0; font-size: 20px;"><strong>${fromEmail}</strong></p>
+            <p style="margin: 10px 0 0 0; font-size: 14px; opacity: 0.9;">↑ Copy this email to reply to the client</p>
+          </div>
+          <div style="padding: 15px; background: #f5f5f5; margin-bottom: 20px;">
+            <strong>Subject:</strong> ${subject}
+            ${attachments.length > 0 ? `<br/><strong>📎 Attachments:</strong> ${attachments.length} file(s) attached` : ''}
+          </div>
+          <div style="padding: 20px; border: 1px solid #ddd; border-radius: 8px;">
+            ${emailHtml || emailText || '<p style="color:#666;">No message content</p>'}
+          </div>
+        `,
+        text: `Client Reply from ${fromEmail}\n\nSubject: ${subject}\n\n${emailText || 'No message content'}`
+      };
 
-        if (attachments.length > 0) {
-          sendPayload.attachments = attachments;
-        }
-
-        const { error } = await resend.emails.send(sendPayload);
-        if (error) {
-          console.error('Send error:', error);
-        } else {
-          console.log('Email forwarded from:', fromEmail);
-        }
-      } catch (sendErr) {
-        console.error('Send failed:', sendErr.message);
+      if (attachments.length > 0) {
+        sendPayload.attachments = attachments;
       }
+
+      const { data, error } = await resend.emails.send(sendPayload);
+      
+      if (error) {
+        console.error('Send error:', JSON.stringify(error));
+        // Still return 200 to prevent retries
+        return res.status(200).json({ received: true, error: error.message });
+      }
+      
+      console.log('Email forwarded from:', fromEmail);
+      return res.status(200).json({ success: true, emailId: data?.id });
     }
+
+    return res.status(200).json({ received: true });
   } catch (error) {
-    console.error('Webhook error:', error);
+    console.error('Webhook error:', error.message);
+    // Return 200 anyway to prevent retries
+    return res.status(200).json({ received: true, error: error.message });
   }
 }
