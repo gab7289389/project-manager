@@ -134,28 +134,29 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
   });
 
   const toggleTask = async (projectId, taskId, currentValue) => {
-    let oldStatus = '';
-    let newStatus = '';
-    let projectName = '';
-    let clientName = '';
+    // Get current project info BEFORE updating
+    const currentProject = projects.find(p => p.id === projectId);
+    const oldStatus = currentProject?.status || 'progress';
+    const projectName = currentProject?.name || 'Unknown';
+    const clientName = clients.find(c => c.id === currentProject?.client_id)?.name || 'Unknown';
     
-    setProjects(prev => prev.map(p => {
-      if (p.id !== projectId) return p;
-      oldStatus = p.status;
-      projectName = p.name;
-      clientName = clients.find(c => c.id === p.client_id)?.name || 'Unknown';
-      const updatedTasks = p.tasks.map(t => t.id === taskId ? { ...t, completed: !currentValue } : t);
-      const allComplete = updatedTasks.every(t => t.completed);
-      const hasRevisions = p.revisions?.length > 0;
-      newStatus = allComplete ? 'completed' : hasRevisions ? 'revision' : 'progress';
-      return { ...p, tasks: updatedTasks, status: newStatus };
-    }));
+    // Calculate what the new status will be
+    const updatedTasks = currentProject.tasks.map(t => t.id === taskId ? { ...t, completed: !currentValue } : t);
+    const allComplete = updatedTasks.every(t => t.completed);
+    const hasRevisions = currentProject.revisions?.length > 0;
+    const newStatus = allComplete ? 'completed' : hasRevisions ? 'revision' : 'progress';
+    
+    // Update local state
+    setProjects(prev => prev.map(p => p.id !== projectId ? p : { ...p, tasks: updatedTasks, status: newStatus }));
     
     try { 
       await db.updateTask(taskId, { completed: !currentValue });
       
-      // Send notification if status changed to completed or revision
+      // Update project status in database if it changed
       if (oldStatus !== newStatus) {
+        await db.updateProject(projectId, { status: newStatus });
+        
+        // Send notification
         if (newStatus === 'completed') {
           fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'project_complete', data: { projectName, clientName } }) }).catch(console.error);
         } else if (newStatus === 'revision') {
