@@ -80,7 +80,16 @@ export default function App() {
     try {
       setLoading(true);
       const [c, s, e, p] = await Promise.all([db.getClients(), db.getServices(), db.getEditors(), db.getProjects()]);
-      setClients(c || []); setServices(s || []); setEditors(e || []); setProjects(p || []);
+      setClients(c || []); setServices(s || []); setEditors(e || []);
+      
+      // Compute status for each project based on tasks and revisions
+      const projectsWithStatus = (p || []).map(project => {
+        const allComplete = project.tasks?.every(t => t.completed) || false;
+        const hasRevisions = project.revisions?.length > 0;
+        const status = allComplete ? 'completed' : hasRevisions ? 'revision' : 'progress';
+        return { ...project, status };
+      });
+      setProjects(projectsWithStatus);
     } catch (error) { console.error('Error:', error); alert('Error loading data'); }
     finally { setLoading(false); }
   };
@@ -136,9 +145,13 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
   const toggleTask = async (projectId, taskId, currentValue) => {
     // Get current project info BEFORE updating
     const currentProject = projects.find(p => p.id === projectId);
-    const oldStatus = currentProject?.status || 'progress';
     const projectName = currentProject?.name || 'Unknown';
     const clientName = clients.find(c => c.id === currentProject?.client_id)?.name || 'Unknown';
+    
+    // Calculate old status from tasks
+    const oldAllComplete = currentProject.tasks.every(t => t.completed);
+    const oldHasRevisions = currentProject.revisions?.length > 0;
+    const oldStatus = oldAllComplete ? 'completed' : oldHasRevisions ? 'revision' : 'progress';
     
     // Calculate what the new status will be
     const updatedTasks = currentProject.tasks.map(t => t.id === taskId ? { ...t, completed: !currentValue } : t);
@@ -146,17 +159,18 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     const hasRevisions = currentProject.revisions?.length > 0;
     const newStatus = allComplete ? 'completed' : hasRevisions ? 'revision' : 'progress';
     
-    // Update local state
+    // Update local state immediately
     setProjects(prev => prev.map(p => p.id !== projectId ? p : { ...p, tasks: updatedTasks, status: newStatus }));
     
     try { 
+      // Save task change
       await db.updateTask(taskId, { completed: !currentValue });
       
-      // Update project status in database if it changed
+      // Always save status to database
+      await db.updateProject(projectId, { status: newStatus });
+      
+      // Send notification if status changed
       if (oldStatus !== newStatus) {
-        await db.updateProject(projectId, { status: newStatus });
-        
-        // Send notification
         if (newStatus === 'completed') {
           fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'project_complete', data: { projectName, clientName } }) }).catch(console.error);
         } else if (newStatus === 'revision') {
