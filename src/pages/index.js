@@ -145,36 +145,72 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
   };
 
   const handleFileUpload = async (projectId, taskId, files) => {
-    // Handle single file or FileList
     const fileArray = Array.from(files);
     if (fileArray.length === 0) return;
     
-    // For now, use first file (tasks are 1:1 with files)
-    const file = fileArray[0];
     const uploadKey = `${projectId}-${taskId}`;
     
-    setProjects(prev => prev.map(p => p.id !== projectId ? p : { ...p, tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: file.name, file_url: 'uploading' } : t) }));
-    setUploadProgress(prev => ({ ...prev, [uploadKey]: { progress: 0, fileName: file.name, fileSize: file.size } }));
+    // For multiple files, we'll combine them (store as JSON array)
+    const totalSize = fileArray.reduce((sum, f) => sum + f.size, 0);
+    const fileNames = fileArray.map(f => f.name);
+    
+    setProjects(prev => prev.map(p => p.id !== projectId ? p : { 
+      ...p, 
+      tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: fileNames.join(', '), file_url: 'uploading' } : t) 
+    }));
+    setUploadProgress(prev => ({ 
+      ...prev, 
+      [uploadKey]: { progress: 0, fileName: fileNames.join(', '), fileSize: totalSize, speed: 0, eta: 0, currentFile: 1, totalFiles: fileArray.length } 
+    }));
     
     try {
-      setSaving(true);
+      const uploadedFiles = [];
       
-      const { fileName, fileUrl } = await db.uploadFile(projectId, file, (progress) => {
-        setUploadProgress(prev => ({ ...prev, [uploadKey]: { ...prev[uploadKey], progress } }));
-      });
+      for (let i = 0; i < fileArray.length; i++) {
+        const file = fileArray[i];
+        
+        setUploadProgress(prev => ({ 
+          ...prev, 
+          [uploadKey]: { ...prev[uploadKey], currentFile: i + 1, fileName: file.name } 
+        }));
+        
+        const { fileName, fileUrl } = await db.uploadFile(projectId, file, (progress, speed, eta) => {
+          // Calculate overall progress across all files
+          const fileProgress = (i * 100 + progress) / fileArray.length;
+          setUploadProgress(prev => ({ 
+            ...prev, 
+            [uploadKey]: { ...prev[uploadKey], progress: Math.round(fileProgress), speed, eta } 
+          }));
+        });
+        
+        uploadedFiles.push({ name: fileName, url: fileUrl });
+      }
       
-      await db.updateTask(taskId, { file_name: fileName, file_url: fileUrl });
-      setProjects(prev => prev.map(p => p.id !== projectId ? p : { ...p, tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: fileName, file_url: fileUrl } : t) }));
+      // Store multiple files as JSON if more than one, otherwise just the single file
+      const finalFileName = uploadedFiles.length === 1 
+        ? uploadedFiles[0].name 
+        : JSON.stringify(uploadedFiles.map(f => f.name));
+      const finalFileUrl = uploadedFiles.length === 1 
+        ? uploadedFiles[0].url 
+        : JSON.stringify(uploadedFiles.map(f => f.url));
+      
+      await db.updateTask(taskId, { file_name: finalFileName, file_url: finalFileUrl });
+      setProjects(prev => prev.map(p => p.id !== projectId ? p : { 
+        ...p, 
+        tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: finalFileName, file_url: finalFileUrl } : t) 
+      }));
       
       // Clear progress after a moment
       setTimeout(() => setUploadProgress(prev => { const { [uploadKey]: _, ...rest } = prev; return rest; }), 1000);
     } catch (e) { 
       console.error(e); 
       alert('Error uploading: ' + (e.message || 'File may be too large')); 
-      setProjects(prev => prev.map(p => p.id !== projectId ? p : { ...p, tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: null, file_url: null } : t) }));
+      setProjects(prev => prev.map(p => p.id !== projectId ? p : { 
+        ...p, 
+        tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: null, file_url: null } : t) 
+      }));
       setUploadProgress(prev => { const { [uploadKey]: _, ...rest } = prev; return rest; });
     }
-    finally { setSaving(false); }
   };
   
   // Bulk upload - upload multiple files to multiple tasks at once
@@ -450,14 +486,18 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                                       <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
                                         <div className="h-full bg-purple-600 transition-all" style={{ width: `${progress.progress}%` }} />
                                       </div>
-                                      <p className="text-xs text-gray-500 mt-1">{progress.progress}%</p>
+                                      <div className="flex justify-between text-xs text-gray-500 mt-1">
+                                        <span>{progress.progress}% {progress.totalFiles > 1 ? `(${progress.currentFile}/${progress.totalFiles})` : ''}</span>
+                                        <span>{progress.speed > 0 ? `${(progress.speed / 1024 / 1024).toFixed(1)} MB/s` : ''}</span>
+                                      </div>
                                     </div>
                                   )}
                                 </div>
                               ) : (
                                 <label className="block border-2 border-dashed border-gray-300 rounded-lg p-3 text-center cursor-pointer hover:bg-gray-50">
-                                  <p className="text-gray-400 text-sm">{saving ? 'Uploading...' : 'Click to upload'}</p>
-                                  <input type="file" className="hidden" disabled={saving} onChange={e => e.target.files?.length && handleFileUpload(project.id, t.id, e.target.files)} />
+                                  <p className="text-gray-400 text-sm">Click to upload</p>
+                                  <p className="text-gray-300 text-xs">Multiple files allowed</p>
+                                  <input type="file" multiple className="hidden" onChange={e => e.target.files?.length && handleFileUpload(project.id, t.id, e.target.files)} />
                                 </label>
                               )}
                             </div>);
