@@ -211,18 +211,37 @@ export const markMagicLinkAccessed = async (token) => {
   if (error) throw error;
 };
 
-// FILE STORAGE with progress tracking
+// FILE STORAGE with progress and speed tracking
 export const uploadFile = async (projectId, file, onProgress) => {
   const fileName = `${projectId}/${Date.now()}-${file.name}`;
   
   // Use XMLHttpRequest for progress tracking
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    let startTime = Date.now();
+    let lastLoaded = 0;
+    let lastTime = startTime;
     
     xhr.upload.addEventListener('progress', (e) => {
       if (e.lengthComputable && onProgress) {
         const percent = Math.round((e.loaded / e.total) * 100);
-        onProgress(percent);
+        const now = Date.now();
+        const timeDiff = (now - lastTime) / 1000; // seconds
+        
+        // Calculate speed (bytes per second)
+        let speed = 0;
+        if (timeDiff > 0.1) { // Update speed every 100ms
+          const bytesDiff = e.loaded - lastLoaded;
+          speed = bytesDiff / timeDiff;
+          lastLoaded = e.loaded;
+          lastTime = now;
+        }
+        
+        // Estimate time remaining
+        const remaining = e.total - e.loaded;
+        const eta = speed > 0 ? remaining / speed : 0;
+        
+        onProgress(percent, speed, eta);
       }
     });
     
