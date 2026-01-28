@@ -181,13 +181,14 @@ export const deleteRevision = async (id) => {
 };
 
 // MAGIC LINKS
-export const createMagicLink = async (projectId, clientId, taskIds) => {
+export const createMagicLink = async (projectId, clientId, taskIds, pendingTaskIds = []) => {
   const { data, error } = await supabase
     .from('magic_links')
     .insert({
       project_id: projectId,
       client_id: clientId,
-      task_ids: taskIds
+      task_ids: taskIds,
+      pending_task_ids: pendingTaskIds
     })
     .select()
     .single();
@@ -210,29 +211,46 @@ export const markMagicLinkAccessed = async (token) => {
   if (error) throw error;
 };
 
-// FILE STORAGE
+// FILE STORAGE with progress tracking
 export const uploadFile = async (projectId, file, onProgress) => {
   const fileName = `${projectId}/${Date.now()}-${file.name}`;
   
-  const { data, error } = await supabase.storage
-    .from('project-files')
-    .upload(fileName, file, {
-      cacheControl: '3600',
-      upsert: false,
-      // Note: Supabase has a 50MB default limit. For larger files,
-      // you need to increase the limit in Supabase Dashboard > Storage > Policies
+  // Use XMLHttpRequest for progress tracking
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable && onProgress) {
+        const percent = Math.round((e.loaded / e.total) * 100);
+        onProgress(percent);
+      }
     });
-  
-  if (error) throw error;
-  
-  const { data: urlData } = supabase.storage
-    .from('project-files')
-    .getPublicUrl(fileName);
-  
-  return {
-    fileName: file.name,
-    fileUrl: urlData.publicUrl
-  };
+    
+    xhr.addEventListener('load', async () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        const { data: urlData } = supabase.storage
+          .from('project-files')
+          .getPublicUrl(fileName);
+        
+        resolve({
+          fileName: file.name,
+          fileUrl: urlData.publicUrl
+        });
+      } else {
+        reject(new Error(`Upload failed: ${xhr.status}`));
+      }
+    });
+    
+    xhr.addEventListener('error', () => reject(new Error('Upload failed')));
+    xhr.addEventListener('abort', () => reject(new Error('Upload aborted')));
+    
+    // Get the upload URL from Supabase
+    const url = `${supabaseUrl}/storage/v1/object/project-files/${fileName}`;
+    xhr.open('POST', url);
+    xhr.setRequestHeader('Authorization', `Bearer ${supabaseAnonKey}`);
+    xhr.setRequestHeader('x-upsert', 'false');
+    xhr.send(file);
+  });
 };
 
 export const deleteFile = async (fileUrl) => {
