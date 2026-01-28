@@ -149,7 +149,7 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     const projectName = currentProject.name || 'Unknown';
     const clientName = clients.find(c => c.id === currentProject.client_id)?.name || 'Unknown';
     
-    // Calculate new task states (toggling the clicked task)
+    // Calculate new task states
     const updatedTasks = currentProject.tasks.map(t => 
       t.id === taskId ? { ...t, completed: !currentValue } : t
     );
@@ -162,8 +162,6 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     const oldStatus = oldAllComplete ? 'completed' : hasRevisions ? 'revision' : 'progress';
     const newStatus = newAllComplete ? 'completed' : hasRevisions ? 'revision' : 'progress';
     
-    console.log('Status change:', { oldStatus, newStatus, oldAllComplete, newAllComplete });
-    
     // Update local state immediately
     setProjects(prev => prev.map(p => 
       p.id !== projectId ? p : { ...p, tasks: updatedTasks, status: newStatus }
@@ -175,56 +173,69 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       
       // Send notification if status changed
       if (oldStatus !== newStatus) {
-        console.log('Sending notification for status change to:', newStatus);
         if (newStatus === 'completed') {
-          fetch('/api/notify', { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify({ type: 'project_complete', data: { projectName, clientName } }) 
-          }).then(r => console.log('Notification sent:', r.ok)).catch(console.error);
+          fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'project_complete', data: { projectName, clientName } }) }).catch(console.error);
         } else if (newStatus === 'revision') {
-          fetch('/api/notify', { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify({ type: 'project_revision', data: { projectName, clientName } }) 
-          }).then(r => console.log('Notification sent:', r.ok)).catch(console.error);
+          fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'project_revision', data: { projectName, clientName } }) }).catch(console.error);
         }
       }
-    } catch (e) { 
-      console.error('Error in toggleTask:', e); 
-      await refreshData(); 
-    }
+    } catch (e) { console.error(e); await refreshData(); }
   };
 
   const handleFileUpload = async (projectId, taskId, files) => {
     const fileArray = Array.from(files);
     if (fileArray.length === 0) return;
     
-    // Single file per task
-    const file = fileArray[0];
     const uploadKey = `${projectId}-${taskId}`;
+    
+    // For multiple files, we'll combine them (store as JSON array)
+    const totalSize = fileArray.reduce((sum, f) => sum + f.size, 0);
+    const fileNames = fileArray.map(f => f.name);
     
     setProjects(prev => prev.map(p => p.id !== projectId ? p : { 
       ...p, 
-      tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: file.name, file_url: 'uploading' } : t) 
+      tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: fileNames.join(', '), file_url: 'uploading' } : t) 
     }));
     setUploadProgress(prev => ({ 
       ...prev, 
-      [uploadKey]: { progress: 0, fileName: file.name, fileSize: file.size, speed: 0 } 
+      [uploadKey]: { progress: 0, fileName: fileNames.join(', '), fileSize: totalSize, speed: 0, eta: 0, currentFile: 1, totalFiles: fileArray.length } 
     }));
     
     try {
-      const { fileName, fileUrl } = await db.uploadFile(projectId, file, (progress, speed) => {
+      const uploadedFiles = [];
+      
+      for (let i = 0; i < fileArray.length; i++) {
+        const file = fileArray[i];
+        
         setUploadProgress(prev => ({ 
           ...prev, 
-          [uploadKey]: { ...prev[uploadKey], progress, speed } 
+          [uploadKey]: { ...prev[uploadKey], currentFile: i + 1, fileName: file.name } 
         }));
-      });
+        
+        const { fileName, fileUrl } = await db.uploadFile(projectId, file, (progress, speed, eta) => {
+          // Calculate overall progress across all files
+          const fileProgress = (i * 100 + progress) / fileArray.length;
+          setUploadProgress(prev => ({ 
+            ...prev, 
+            [uploadKey]: { ...prev[uploadKey], progress: Math.round(fileProgress), speed, eta } 
+          }));
+        });
+        
+        uploadedFiles.push({ name: fileName, url: fileUrl });
+      }
       
-      await db.updateTask(taskId, { file_name: fileName, file_url: fileUrl });
+      // Store multiple files as JSON if more than one, otherwise just the single file
+      const finalFileName = uploadedFiles.length === 1 
+        ? uploadedFiles[0].name 
+        : JSON.stringify(uploadedFiles.map(f => f.name));
+      const finalFileUrl = uploadedFiles.length === 1 
+        ? uploadedFiles[0].url 
+        : JSON.stringify(uploadedFiles.map(f => f.url));
+      
+      await db.updateTask(taskId, { file_name: finalFileName, file_url: finalFileUrl });
       setProjects(prev => prev.map(p => p.id !== projectId ? p : { 
         ...p, 
-        tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: fileName, file_url: fileUrl } : t) 
+        tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: finalFileName, file_url: finalFileUrl } : t) 
       }));
       
       // Clear progress after a moment
@@ -295,7 +306,6 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       const resData = await res.json();
       
       if (!res.ok) {
-        // Get detailed error from response
         const errorMsg = resData.error || 'Email failed to send';
         const errorType = resData.errorType || 'unknown';
         throw new Error(`${errorMsg} (${errorType})`);
@@ -314,8 +324,8 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       await Promise.all(taskIds.map(id => db.updateTask(id, { sent: true, completed: true, sent_at: new Date().toISOString() })));
       await db.updateProject(project.id, { status: newStatus });
       
-      // Send success notification for files sent
-      fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'files_sent', data: { success: true, projectName: project.name, clientName: client.name, clientEmail: client.email, files: fileNames } }) }).catch(console.error);
+      // NOTE: Success notification is sent via webhook when email.delivered is received
+      // This ensures we only notify on actual successful delivery
       
       // Send completed notification if all tasks are done
       if (newStatus === 'completed') {
@@ -326,7 +336,7 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     } catch (e) { 
       console.error('Send to client error:', e); 
       alert('❌ Failed to send: ' + e.message);
-      // Send failure notification with detailed error
+      // Send failure notification immediately - we know it failed
       fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'files_sent', data: { success: false, projectName: project.name, clientName: client.name, clientEmail: client.email, files: fileNames, error: e.message } }) }).catch(console.error);
       return false; 
     }
@@ -367,9 +377,7 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
         throw new Error(`${errorMsg} (${errorType})`);
       }
       
-      // Send success notification for resend
-      fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'files_sent', data: { success: true, projectName: project.name + ' (RESEND)', clientName: client.name, clientEmail: client.email, files: fileNames } }) }).catch(console.error);
-      
+      // NOTE: Success notification sent via webhook on email.delivered
       return true;
     } catch (e) { 
       console.error('Resend error:', e); 
@@ -389,10 +397,6 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       { id: tempId + '-2', text: `Submit ${data.type} Revision to client`, is_editor_task: false, is_client_task: true, completed: false }
     ];
     
-    // Get project and client info for notification
-    const project = projects.find(p => p.id === projectId);
-    const clientName = clients.find(c => c.id === project?.client_id)?.name || 'Unknown';
-    
     // Optimistic update
     setProjects(prev => prev.map(p => p.id !== projectId ? p : {
       ...p,
@@ -406,9 +410,6 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
         { project_id: projectId, text: `Submit ${data.type} Revision to editor`, is_editor_task: true },
         { project_id: projectId, text: `Submit ${data.type} Revision to client`, is_client_task: true }
       ]);
-      
-      // Send revision notification
-      fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'project_revision', data: { projectName: project?.name, clientName, revisionNote: `${data.type}: ${data.note || 'Revision requested'}` } }) }).catch(console.error);
       
       // Update with real IDs from database without full refresh
       if (result && result.revision && result.tasks) {
@@ -592,7 +593,7 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                                         <div className="h-full bg-purple-600 transition-all" style={{ width: `${progress.progress}%` }} />
                                       </div>
                                       <div className="flex justify-between text-xs text-gray-500 mt-1">
-                                        <span>{progress.progress}%</span>
+                                        <span>{progress.progress}% {progress.totalFiles > 1 ? `(${progress.currentFile}/${progress.totalFiles})` : ''}</span>
                                         <span>{progress.speed > 0 ? `${(progress.speed / 1024 / 1024).toFixed(1)} MB/s` : ''}</span>
                                       </div>
                                     </div>
@@ -610,8 +611,9 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                                   }}
                                   onClick={() => document.getElementById(`file-${t.id}`).click()}
                                 >
-                                  <p className="text-gray-400 text-sm">📁 Drop file or click to upload</p>
-                                  <input id={`file-${t.id}`} type="file" className="hidden" onChange={e => e.target.files?.length && handleFileUpload(project.id, t.id, e.target.files)} />
+                                  <p className="text-gray-400 text-sm">📁 Drop files or click to upload</p>
+                                  <p className="text-gray-300 text-xs">Multiple files allowed</p>
+                                  <input id={`file-${t.id}`} type="file" multiple className="hidden" onChange={e => e.target.files?.length && handleFileUpload(project.id, t.id, e.target.files)} />
                                 </div>
                               )}
                             </div>);
@@ -721,7 +723,15 @@ function DatabaseModal({ tab, item, onClose, onSave }) {
     if (!form.name?.trim()) { alert('Name required'); return; }
     if (tab !== 'services' && !form.email?.trim()) { alert('Email required'); return; }
     const tasks = typeof form.tasks === 'string' ? form.tasks.split(',').map(t => t.trim()).filter(Boolean) : form.tasks;
-    onSave({ ...form, tasks: tab === 'services' ? tasks : undefined, avatar: tab === 'editors' ? (item?.avatar || '👤') : undefined });
+    
+    // Build save object based on tab type - don't include email for services
+    if (tab === 'services') {
+      onSave({ name: form.name, tasks });
+    } else if (tab === 'editors') {
+      onSave({ name: form.name, email: form.email, avatar: item?.avatar || '👤' });
+    } else {
+      onSave({ name: form.name, email: form.email, notes: form.notes });
+    }
   };
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-auto"><div className="p-4 border-b flex justify-between"><h2 className="text-lg font-bold">{item ? 'Edit' : 'Add'} {tab.slice(0,-1)}</h2><button onClick={onClose} className="text-2xl text-gray-400">&times;</button></div><div className="p-4 space-y-4"><div><label className="block text-sm font-medium mb-1">Name *</label><input value={form.name || ''} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div>{tab !== 'services' && <div><label className="block text-sm font-medium mb-1">Email *</label><input value={form.email || ''} onChange={e => setForm({ ...form, email: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div>}{tab === 'clients' && <div><label className="block text-sm font-medium mb-1">Notes</label><textarea value={form.notes || ''} onChange={e => setForm({ ...form, notes: e.target.value })} className="w-full border rounded-lg px-3 py-2" rows={2} /></div>}{tab === 'services' && <div><label className="block text-sm font-medium mb-1">Tasks * (comma separated)</label><textarea value={Array.isArray(form.tasks) ? form.tasks.join(', ') : form.tasks || ''} onChange={e => setForm({ ...form, tasks: e.target.value })} className="w-full border rounded-lg px-3 py-2" rows={3} /></div>}<button onClick={save} className="w-full bg-purple-600 text-white py-2 rounded-lg font-medium">Save</button></div></div></div>
