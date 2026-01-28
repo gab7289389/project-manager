@@ -144,29 +144,24 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     try { await db.updateTask(taskId, { completed: !currentValue }); } catch (e) { console.error(e); await refreshData(); }
   };
 
-  const handleFileUpload = async (projectId, taskId, file) => {
+  const handleFileUpload = async (projectId, taskId, files) => {
+    // Handle single file or FileList
+    const fileArray = Array.from(files);
+    if (fileArray.length === 0) return;
+    
+    // For now, use first file (tasks are 1:1 with files)
+    const file = fileArray[0];
     const uploadKey = `${projectId}-${taskId}`;
+    
     setProjects(prev => prev.map(p => p.id !== projectId ? p : { ...p, tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: file.name, file_url: 'uploading' } : t) }));
     setUploadProgress(prev => ({ ...prev, [uploadKey]: { progress: 0, fileName: file.name, fileSize: file.size } }));
     
     try {
       setSaving(true);
       
-      // Simulate progress for better UX (actual progress requires XHR)
-      const progressInterval = setInterval(() => {
-        setUploadProgress(prev => {
-          const current = prev[uploadKey]?.progress || 0;
-          if (current < 90) {
-            return { ...prev, [uploadKey]: { ...prev[uploadKey], progress: current + 10 } };
-          }
-          return prev;
-        });
-      }, 200);
-      
-      const { fileName, fileUrl } = await db.uploadFile(projectId, file);
-      
-      clearInterval(progressInterval);
-      setUploadProgress(prev => ({ ...prev, [uploadKey]: { ...prev[uploadKey], progress: 100 } }));
+      const { fileName, fileUrl } = await db.uploadFile(projectId, file, (progress) => {
+        setUploadProgress(prev => ({ ...prev, [uploadKey]: { ...prev[uploadKey], progress } }));
+      });
       
       await db.updateTask(taskId, { file_name: fileName, file_url: fileUrl });
       setProjects(prev => prev.map(p => p.id !== projectId ? p : { ...p, tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: fileName, file_url: fileUrl } : t) }));
@@ -181,6 +176,23 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     }
     finally { setSaving(false); }
   };
+  
+  // Bulk upload - upload multiple files to multiple tasks at once
+  const handleBulkUpload = async (projectId, taskIds, files) => {
+    const fileArray = Array.from(files);
+    if (fileArray.length === 0 || taskIds.length === 0) return;
+    
+    // Match files to tasks in order
+    const uploads = taskIds.slice(0, fileArray.length).map((taskId, i) => ({
+      taskId,
+      file: fileArray[i]
+    }));
+    
+    // Upload all files
+    for (const { taskId, file } of uploads) {
+      await handleFileUpload(projectId, taskId, [file]);
+    }
+  };
 
   const removeFile = async (projectId, taskId, fileUrl) => {
     setProjects(prev => prev.map(p => p.id !== projectId ? p : { ...p, tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: null, file_url: null } : t) }));
@@ -190,14 +202,45 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
   const sendToClient = async (project, taskIds, client) => {
     try {
       setSaving(true);
-      const magicLink = await db.createMagicLink(project.id, client.id, taskIds);
+      // Get ALL client task IDs (sent + being sent now + pending) for the magic link
+      const allClientTaskIds = project.tasks.filter(t => t.is_client_task).map(t => t.id);
+      // Separate pending tasks (no file) from tasks with files
+      const pendingTaskIds = project.tasks.filter(t => t.is_client_task && !t.file_url).map(t => t.id);
+      const tasksWithFiles = allClientTaskIds.filter(id => !pendingTaskIds.includes(id));
+      
+      const magicLink = await db.createMagicLink(project.id, client.id, tasksWithFiles, pendingTaskIds);
       const files = project.tasks.filter(t => taskIds.includes(t.id)).map(t => ({ type: t.text.replace('Submit ', '').replace(' to client', ''), name: t.file_name }));
-      // Get pending files (client tasks without uploads)
+      // Get pending files (client tasks without uploads that aren't being sent now)
       const pendingFiles = project.tasks.filter(t => t.is_client_task && !t.file_url && !taskIds.includes(t.id)).map(t => ({ type: t.text.replace('Submit ', '').replace(' to client', '') }));
-      const res = await fetch('/api/send-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: client.email, projectName: project.name, clientName: client.name, magicLinkToken: magicLink.token, files, pendingFiles }) });
+      // Get previously sent files
+      const previouslySentFiles = project.tasks.filter(t => t.is_client_task && t.sent && !taskIds.includes(t.id)).map(t => ({ type: t.text.replace('Submit ', '').replace(' to client', ''), name: t.file_name }));
+      const res = await fetch('/api/send-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: client.email, projectName: project.name, clientName: client.name, magicLinkToken: magicLink.token, files, pendingFiles, previouslySentFiles }) });
       if (!res.ok) throw new Error('Email failed');
       setProjects(prev => prev.map(p => p.id !== project.id ? p : { ...p, tasks: p.tasks.map(t => taskIds.includes(t.id) ? { ...t, sent: true, completed: true } : t) }));
       await Promise.all(taskIds.map(id => db.updateTask(id, { sent: true, completed: true, sent_at: new Date().toISOString() })));
+      return true;
+    } catch (e) { console.error(e); alert('Error: ' + e.message); return false; }
+    finally { setSaving(false); }
+  };
+  
+  // Resend all sent files to client (for expired links)
+  const resendToClient = async (project, client) => {
+    try {
+      setSaving(true);
+      const sentTasks = project.tasks.filter(t => t.is_client_task && t.sent && t.file_url);
+      if (sentTasks.length === 0) {
+        alert('No files have been sent to this client yet');
+        return false;
+      }
+      const sentTaskIds = sentTasks.map(t => t.id);
+      const pendingTaskIds = project.tasks.filter(t => t.is_client_task && !t.file_url).map(t => t.id);
+      
+      const magicLink = await db.createMagicLink(project.id, client.id, sentTaskIds, pendingTaskIds);
+      const files = sentTasks.map(t => ({ type: t.text.replace('Submit ', '').replace(' to client', ''), name: t.file_name }));
+      const pendingFiles = project.tasks.filter(t => t.is_client_task && !t.file_url).map(t => ({ type: t.text.replace('Submit ', '').replace(' to client', '') }));
+      
+      const res = await fetch('/api/send-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: client.email, projectName: project.name, clientName: client.name, magicLinkToken: magicLink.token, files, pendingFiles, previouslySentFiles: [], isResend: true }) });
+      if (!res.ok) throw new Error('Email failed');
       return true;
     } catch (e) { console.error(e); alert('Error: ' + e.message); return false; }
     finally { setSaving(false); }
@@ -375,7 +418,13 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                         </div>
                         <div className="p-3 sm:p-4 border-t bg-blue-50"><h4 className="font-medium text-sm mb-3">🎬 Editor Tasks</h4><div className="space-y-2">{editorTasks.map(t => <label key={t.id} className="flex items-center gap-3 p-2 bg-white rounded-lg border cursor-pointer"><input type="checkbox" checked={t.completed} onChange={() => toggleTask(project.id, t.id, t.completed)} className="w-4 h-4" /><span className={t.completed ? 'line-through text-gray-400' : ''}>{t.text}</span></label>)}</div></div>
                         <div className="p-3 sm:p-4 border-t bg-purple-50">
-                          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-3"><h4 className="font-medium text-sm">📧 Submit to Client</h4>{readyToSend.length > 0 && <button onClick={() => setModal({ type: 'sendToClient', project, tasks: readyToSend, client })} className="bg-green-600 text-white px-3 py-1.5 rounded-lg text-xs">📤 Send {readyToSend.length} File{readyToSend.length > 1 ? 's' : ''}</button>}</div>
+                          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-3">
+                            <h4 className="font-medium text-sm">📧 Submit to Client</h4>
+                            <div className="flex gap-2">
+                              {clientTasks.some(t => t.sent) && <button onClick={() => { if(confirm('Resend all files? This creates a new magic link.')) resendToClient(project, client); }} className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs">🔄 Resend All</button>}
+                              {readyToSend.length > 0 && <button onClick={() => setModal({ type: 'sendToClient', project, tasks: readyToSend, client })} className="bg-green-600 text-white px-3 py-1.5 rounded-lg text-xs">📤 Send {readyToSend.length} File{readyToSend.length > 1 ? 's' : ''}</button>}
+                            </div>
+                          </div>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">{clientTasks.map(t => {
                             const label = t.text.replace('Submit ', '').replace(' to client', '');
                             const uploadKey = `${project.id}-${t.id}`;
@@ -408,7 +457,7 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                               ) : (
                                 <label className="block border-2 border-dashed border-gray-300 rounded-lg p-3 text-center cursor-pointer hover:bg-gray-50">
                                   <p className="text-gray-400 text-sm">{saving ? 'Uploading...' : 'Click to upload'}</p>
-                                  <input type="file" className="hidden" disabled={saving} onChange={e => e.target.files?.[0] && handleFileUpload(project.id, t.id, e.target.files[0])} />
+                                  <input type="file" className="hidden" disabled={saving} onChange={e => e.target.files?.length && handleFileUpload(project.id, t.id, e.target.files)} />
                                 </label>
                               )}
                             </div>);
