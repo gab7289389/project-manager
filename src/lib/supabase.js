@@ -101,7 +101,6 @@ export const getProjects = async () => {
 };
 
 export const createProject = async (project, tasks) => {
-  // Create project
   const { data: projectData, error: projectError } = await supabase
     .from('projects')
     .insert(project)
@@ -110,7 +109,6 @@ export const createProject = async (project, tasks) => {
   
   if (projectError) throw projectError;
   
-  // Create tasks
   if (tasks.length > 0) {
     const tasksWithProjectId = tasks.map(t => ({ ...t, project_id: projectData.id }));
     const { error: tasksError } = await supabase.from('tasks').insert(tasksWithProjectId);
@@ -140,7 +138,6 @@ export const updateTask = async (id, updates) => {
 
 // REVISIONS
 export const createRevision = async (revision, tasks) => {
-  // Create revision
   const { data: revisionData, error: revisionError } = await supabase
     .from('revisions')
     .insert(revision)
@@ -149,7 +146,6 @@ export const createRevision = async (revision, tasks) => {
   
   if (revisionError) throw revisionError;
   
-  // Create associated tasks
   let createdTasks = [];
   if (tasks.length > 0) {
     const tasksWithIds = tasks.map(t => ({ ...t, revision_id: revisionData.id }));
@@ -171,11 +167,9 @@ export const updateRevision = async (id, updates) => {
 };
 
 export const deleteRevision = async (id) => {
-  // First delete associated tasks
   const { error: tasksError } = await supabase.from('tasks').delete().eq('revision_id', id);
   if (tasksError) throw tasksError;
   
-  // Then delete the revision
   const { error } = await supabase.from('revisions').delete().eq('id', id);
   if (error) throw error;
 };
@@ -198,8 +192,13 @@ export const createMagicLink = async (projectId, clientId, taskIds, pendingTaskI
 };
 
 export const getMagicLink = async (token) => {
+  console.log('Calling validate_magic_link with token:', token);
   const { data, error } = await supabase.rpc('validate_magic_link', { link_token: token });
-  if (error) throw error;
+  console.log('validate_magic_link response:', { data, error });
+  if (error) {
+    console.error('validate_magic_link error:', error);
+    throw error;
+  }
   return data?.[0];
 };
 
@@ -215,33 +214,30 @@ export const markMagicLinkAccessed = async (token) => {
 export const uploadFile = async (projectId, file, onProgress) => {
   const fileName = `${projectId}/${Date.now()}-${file.name}`;
   
-  // Use XMLHttpRequest for progress tracking
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    let startTime = Date.now();
+    const startTime = Date.now();
     let lastLoaded = 0;
     let lastTime = startTime;
+    let currentSpeed = 0;
     
     xhr.upload.addEventListener('progress', (e) => {
       if (e.lengthComputable && onProgress) {
         const percent = Math.round((e.loaded / e.total) * 100);
         const now = Date.now();
-        const timeDiff = (now - lastTime) / 1000; // seconds
+        const timeDiff = (now - lastTime) / 1000;
         
-        // Calculate speed (bytes per second)
-        let speed = 0;
-        if (timeDiff > 0.1) { // Update speed every 100ms
+        if (timeDiff >= 0.2) {
           const bytesDiff = e.loaded - lastLoaded;
-          speed = bytesDiff / timeDiff;
+          currentSpeed = bytesDiff / timeDiff;
           lastLoaded = e.loaded;
           lastTime = now;
         }
         
-        // Estimate time remaining
         const remaining = e.total - e.loaded;
-        const eta = speed > 0 ? remaining / speed : 0;
+        const eta = currentSpeed > 0 ? remaining / currentSpeed : 0;
         
-        onProgress(percent, speed, eta);
+        onProgress(percent, currentSpeed, eta);
       }
     });
     
@@ -263,7 +259,6 @@ export const uploadFile = async (projectId, file, onProgress) => {
     xhr.addEventListener('error', () => reject(new Error('Upload failed')));
     xhr.addEventListener('abort', () => reject(new Error('Upload aborted')));
     
-    // Get the upload URL from Supabase
     const url = `${supabaseUrl}/storage/v1/object/project-files/${fileName}`;
     xhr.open('POST', url);
     xhr.setRequestHeader('Authorization', `Bearer ${supabaseAnonKey}`);
