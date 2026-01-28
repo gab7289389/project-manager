@@ -123,6 +123,9 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
   const [modal, setModal] = useState(null);
   const [saving, setSaving] = useState(false);
 
+  const [uploadProgress, setUploadProgress] = useState({});
+  const [creatingProject, setCreatingProject] = useState(false);
+
   const getClient = id => clients.find(c => c.id === id);
   const filtered = projects.filter(p => clientFilter === 'all' || p.client_id === clientFilter).sort((a, b) => {
     if (a.status === 'completed' && b.status !== 'completed') return 1;
@@ -142,13 +145,40 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
   };
 
   const handleFileUpload = async (projectId, taskId, file) => {
+    const uploadKey = `${projectId}-${taskId}`;
     setProjects(prev => prev.map(p => p.id !== projectId ? p : { ...p, tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: file.name, file_url: 'uploading' } : t) }));
+    setUploadProgress(prev => ({ ...prev, [uploadKey]: { progress: 0, fileName: file.name, fileSize: file.size } }));
+    
     try {
       setSaving(true);
+      
+      // Simulate progress for better UX (actual progress requires XHR)
+      const progressInterval = setInterval(() => {
+        setUploadProgress(prev => {
+          const current = prev[uploadKey]?.progress || 0;
+          if (current < 90) {
+            return { ...prev, [uploadKey]: { ...prev[uploadKey], progress: current + 10 } };
+          }
+          return prev;
+        });
+      }, 200);
+      
       const { fileName, fileUrl } = await db.uploadFile(projectId, file);
+      
+      clearInterval(progressInterval);
+      setUploadProgress(prev => ({ ...prev, [uploadKey]: { ...prev[uploadKey], progress: 100 } }));
+      
       await db.updateTask(taskId, { file_name: fileName, file_url: fileUrl });
       setProjects(prev => prev.map(p => p.id !== projectId ? p : { ...p, tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: fileName, file_url: fileUrl } : t) }));
-    } catch (e) { console.error(e); alert('Error uploading'); setProjects(prev => prev.map(p => p.id !== projectId ? p : { ...p, tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: null, file_url: null } : t) })); }
+      
+      // Clear progress after a moment
+      setTimeout(() => setUploadProgress(prev => { const { [uploadKey]: _, ...rest } = prev; return rest; }), 1000);
+    } catch (e) { 
+      console.error(e); 
+      alert('Error uploading: ' + (e.message || 'File may be too large')); 
+      setProjects(prev => prev.map(p => p.id !== projectId ? p : { ...p, tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: null, file_url: null } : t) }));
+      setUploadProgress(prev => { const { [uploadKey]: _, ...rest } = prev; return rest; });
+    }
     finally { setSaving(false); }
   };
 
@@ -162,7 +192,9 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       setSaving(true);
       const magicLink = await db.createMagicLink(project.id, client.id, taskIds);
       const files = project.tasks.filter(t => taskIds.includes(t.id)).map(t => ({ type: t.text.replace('Submit ', '').replace(' to client', ''), name: t.file_name }));
-      const res = await fetch('/api/send-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: client.email, projectName: project.name, clientName: client.name, magicLinkToken: magicLink.token, files }) });
+      // Get pending files (client tasks without uploads)
+      const pendingFiles = project.tasks.filter(t => t.is_client_task && !t.file_url && !taskIds.includes(t.id)).map(t => ({ type: t.text.replace('Submit ', '').replace(' to client', '') }));
+      const res = await fetch('/api/send-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: client.email, projectName: project.name, clientName: client.name, magicLinkToken: magicLink.token, files, pendingFiles }) });
       if (!res.ok) throw new Error('Email failed');
       setProjects(prev => prev.map(p => p.id !== project.id ? p : { ...p, tasks: p.tasks.map(t => taskIds.includes(t.id) ? { ...t, sent: true, completed: true } : t) }));
       await Promise.all(taskIds.map(id => db.updateTask(id, { sent: true, completed: true, sent_at: new Date().toISOString() })));
@@ -230,11 +262,12 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     try { await db.updateRevision(revisionId, data); } catch (e) { console.error(e); await refreshData(); }
   };
 
-  // Optimistic revision delete
+  // Optimistic revision delete - also removes associated tasks
   const deleteRevision = async (revisionId) => {
     setProjects(prev => prev.map(p => ({
       ...p,
-      revisions: p.revisions?.filter(r => r.id !== revisionId)
+      revisions: p.revisions?.filter(r => r.id !== revisionId),
+      tasks: p.tasks?.filter(t => t.revision_id !== revisionId)
     })));
     try { await db.deleteRevision(revisionId); } catch (e) { console.error(e); await refreshData(); }
   };
@@ -258,8 +291,11 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     try { await db.deleteProject(projectId); } catch (e) { console.error(e); await refreshData(); }
   };
 
-  // Optimistic project create
+  // Optimistic project create with double-tap prevention
   const createProject = async (projectData, tasks) => {
+    if (creatingProject) return; // Prevent double-tap
+    setCreatingProject(true);
+    
     const tempId = 'temp-' + Date.now();
     const tempProject = {
       id: tempId,
@@ -274,6 +310,7 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       await db.createProject(projectData, tasks);
       await refreshData();
     } catch (e) { console.error(e); alert('Error'); await refreshData(); }
+    finally { setCreatingProject(false); }
   };
 
   return (
@@ -341,7 +378,40 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                           <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-3"><h4 className="font-medium text-sm">📧 Submit to Client</h4>{readyToSend.length > 0 && <button onClick={() => setModal({ type: 'sendToClient', project, tasks: readyToSend, client })} className="bg-green-600 text-white px-3 py-1.5 rounded-lg text-xs">📤 Send {readyToSend.length} File{readyToSend.length > 1 ? 's' : ''}</button>}</div>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">{clientTasks.map(t => {
                             const label = t.text.replace('Submit ', '').replace(' to client', '');
-                            return (<div key={t.id} className={`p-3 rounded-lg border-2 ${t.sent ? 'bg-green-50 border-green-300' : t.file_url ? 'bg-yellow-50 border-yellow-300' : 'bg-white border-gray-200'}`}><div className="flex justify-between mb-2"><span className="font-medium text-sm">{label}</span>{t.sent && <span className="text-green-600 text-xs">✓ Sent</span>}{t.file_url && t.file_url !== 'uploading' && !t.sent && <span className="text-yellow-600 text-xs">Ready</span>}{t.file_url === 'uploading' && <span className="text-blue-600 text-xs">Uploading...</span>}</div>{t.sent ? <p className="text-sm text-green-600">📎 {t.file_name}</p> : t.file_url ? <div><p className="text-sm text-yellow-700 mb-1">📎 {t.file_name}</p>{t.file_url !== 'uploading' && <button onClick={() => removeFile(project.id, t.id, t.file_url)} className="text-xs text-red-500">Remove</button>}</div> : <label className="block border-2 border-dashed border-gray-300 rounded-lg p-3 text-center cursor-pointer hover:bg-gray-50"><p className="text-gray-400 text-sm">{saving ? 'Uploading...' : 'Click to upload'}</p><input type="file" className="hidden" disabled={saving} onChange={e => e.target.files?.[0] && handleFileUpload(project.id, t.id, e.target.files[0])} /></label>}</div>);
+                            const uploadKey = `${project.id}-${t.id}`;
+                            const progress = uploadProgress[uploadKey];
+                            return (<div key={t.id} className={`p-3 rounded-lg border-2 ${t.sent ? 'bg-green-50 border-green-300' : t.file_url ? 'bg-yellow-50 border-yellow-300' : 'bg-white border-gray-200'}`}>
+                              <div className="flex justify-between mb-2"><span className="font-medium text-sm">{label}</span>{t.sent && <span className="text-green-600 text-xs">✓ Sent</span>}{t.file_url && t.file_url !== 'uploading' && !t.sent && <span className="text-yellow-600 text-xs">Ready</span>}{t.file_url === 'uploading' && <span className="text-blue-600 text-xs">Uploading...</span>}</div>
+                              {t.sent ? (
+                                <div>
+                                  <p className="text-sm text-green-600 mb-2">📎 {t.file_name}</p>
+                                  <a href={t.file_url} target="_blank" rel="noopener noreferrer" download className="text-xs text-purple-600 hover:underline">📥 Download</a>
+                                </div>
+                              ) : t.file_url ? (
+                                <div>
+                                  <p className="text-sm text-yellow-700 mb-1">📎 {t.file_name}</p>
+                                  {t.file_url !== 'uploading' && (
+                                    <div className="flex gap-2">
+                                      <a href={t.file_url} target="_blank" rel="noopener noreferrer" download className="text-xs text-purple-600 hover:underline">📥 Download</a>
+                                      <button onClick={() => removeFile(project.id, t.id, t.file_url)} className="text-xs text-red-500">Remove</button>
+                                    </div>
+                                  )}
+                                  {progress && (
+                                    <div className="mt-2">
+                                      <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                                        <div className="h-full bg-purple-600 transition-all" style={{ width: `${progress.progress}%` }} />
+                                      </div>
+                                      <p className="text-xs text-gray-500 mt-1">{progress.progress}%</p>
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <label className="block border-2 border-dashed border-gray-300 rounded-lg p-3 text-center cursor-pointer hover:bg-gray-50">
+                                  <p className="text-gray-400 text-sm">{saving ? 'Uploading...' : 'Click to upload'}</p>
+                                  <input type="file" className="hidden" disabled={saving} onChange={e => e.target.files?.[0] && handleFileUpload(project.id, t.id, e.target.files[0])} />
+                                </label>
+                              )}
+                            </div>);
                           })}</div>
                         </div>
                         <div className="p-3 border-t bg-gray-50 flex justify-end"><button onClick={() => setModal({ type: 'deleteProject', project })} className="text-xs text-red-500">🗑️ Delete Project</button></div>
@@ -359,7 +429,7 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       </main>
 
       {modal?.type === 'addProject' && <AddProjectModal clients={clients} services={services} onClose={() => setModal(null)} onCreate={async (p, t) => { await createProject(p, t); setModal(null); }} />}
-      {modal?.type === 'editProject' && <EditProjectModal project={modal.project} clients={clients} onClose={() => setModal(null)} onSave={async (u) => { await updateProject(modal.project.id, u); setModal(null); }} />}
+      {modal?.type === 'editProject' && <EditProjectModal project={modal.project} clients={clients} services={services} onClose={() => setModal(null)} onSave={async (u) => { await updateProject(modal.project.id, u); setModal(null); }} />}
       {modal?.type === 'addRevision' && <AddRevisionModal serviceTypes={modal.serviceTypes} onClose={() => setModal(null)} onSave={async (d) => { await addRevision(modal.project.id, d); setModal(null); }} />}
       {modal?.type === 'editRevision' && <EditRevisionModal revision={modal.revision} serviceTypes={modal.serviceTypes} onClose={() => setModal(null)} onSave={async (d) => { await updateRevision(modal.revision.id, d); setModal(null); }} onDelete={async () => { await deleteRevision(modal.revision.id); setModal(null); }} />}
       {modal?.type === 'editNotes' && <EditNotesModal client={modal.client} onClose={() => setModal(null)} onSave={async (n) => { await updateClientNotes(modal.client.id, n); setModal(null); }} />}
@@ -471,9 +541,14 @@ function AddProjectModal({ clients, services, onClose, onCreate }) {
   );
 }
 
-function EditProjectModal({ project, clients, onClose, onSave }) {
-  const [form, setForm] = useState({ name: project.name, due_date: project.due_date, client_id: project.client_id });
-  return <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-2xl max-w-md w-full"><div className="p-4 border-b flex justify-between"><h2 className="text-lg font-bold">Edit Project</h2><button onClick={onClose} className="text-2xl text-gray-400">&times;</button></div><div className="p-4 space-y-4"><div><label className="block text-sm font-medium mb-1">Name</label><input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div><div><label className="block text-sm font-medium mb-1">Due Date</label><input type="date" value={form.due_date} onChange={e => setForm({ ...form, due_date: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div><div><label className="block text-sm font-medium mb-1">Client</label><select value={form.client_id} onChange={e => setForm({ ...form, client_id: e.target.value })} className="w-full border rounded-lg px-3 py-2">{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div><button onClick={() => onSave(form)} className="w-full bg-purple-600 text-white py-3 rounded-lg font-medium">Save</button></div></div></div>;
+function EditProjectModal({ project, clients, services, onClose, onSave }) {
+  const [form, setForm] = useState({ 
+    name: project.name, 
+    due_date: project.due_date, 
+    client_id: project.client_id,
+    services: project.services || []
+  });
+  return <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-auto"><div className="p-4 border-b flex justify-between"><h2 className="text-lg font-bold">Edit Project</h2><button onClick={onClose} className="text-2xl text-gray-400">&times;</button></div><div className="p-4 space-y-4"><div><label className="block text-sm font-medium mb-1">Name</label><input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div><div><label className="block text-sm font-medium mb-1">Due Date</label><input type="date" value={form.due_date} onChange={e => setForm({ ...form, due_date: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div><div><label className="block text-sm font-medium mb-1">Client</label><select value={form.client_id} onChange={e => setForm({ ...form, client_id: e.target.value })} className="w-full border rounded-lg px-3 py-2">{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div><div><label className="block text-sm font-medium mb-2">Services</label><div className="grid grid-cols-2 gap-2 max-h-40 overflow-auto">{services.map(s => <label key={s.id} className={`flex items-center gap-2 p-2 rounded-lg border-2 cursor-pointer text-sm ${form.services.includes(s.name) ? 'border-purple-400 bg-purple-50' : 'border-gray-200'}`}><input type="checkbox" checked={form.services.includes(s.name)} onChange={e => setForm({ ...form, services: e.target.checked ? [...form.services, s.name] : form.services.filter(x => x !== s.name) })} className="w-4 h-4" /><span>{s.name}</span></label>)}</div><p className="text-xs text-gray-400 mt-1">Note: Changing services won't add/remove tasks</p></div><button onClick={() => onSave(form)} className="w-full bg-purple-600 text-white py-3 rounded-lg font-medium">Save</button></div></div></div>;
 }
 
 function AddRevisionModal({ serviceTypes, onClose, onSave }) {
