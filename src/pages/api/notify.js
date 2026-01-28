@@ -41,10 +41,10 @@ export default async function handler(req, res) {
         break;
 
       case 'project_complete':
-        subject = `🎉 Project Completed: ${data.projectName}`;
+        subject = `🎉 Status Updated: Complete (${data.projectName})`;
         html = `
           <div style="font-family: sans-serif; max-width: 600px;">
-            <h2 style="color: #10b981;">🎉 Project Marked as Complete</h2>
+            <h2 style="color: #10b981;">🎉 Status Updated: Complete</h2>
             <p><strong>Project:</strong> ${data.projectName}</p>
             <p><strong>Client:</strong> ${data.clientName}</p>
             <p style="color: #6b7280; font-size: 12px; margin-top: 20px;">
@@ -55,10 +55,10 @@ export default async function handler(req, res) {
         break;
 
       case 'project_revision':
-        subject = `🔄 Revision Required: ${data.projectName}`;
+        subject = `🔄 Status Updated: Revision (${data.projectName})`;
         html = `
           <div style="font-family: sans-serif; max-width: 600px;">
-            <h2 style="color: #f59e0b;">🔄 Project Needs Revision</h2>
+            <h2 style="color: #f59e0b;">🔄 Status Updated: Revision</h2>
             <p><strong>Project:</strong> ${data.projectName}</p>
             <p><strong>Client:</strong> ${data.clientName}</p>
             ${data.revisionNote ? `<p><strong>Note:</strong> ${data.revisionNote}</p>` : ''}
