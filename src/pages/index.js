@@ -143,41 +143,57 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
   });
 
   const toggleTask = async (projectId, taskId, currentValue) => {
-    // Get current project info BEFORE updating
     const currentProject = projects.find(p => p.id === projectId);
-    const projectName = currentProject?.name || 'Unknown';
-    const clientName = clients.find(c => c.id === currentProject?.client_id)?.name || 'Unknown';
+    if (!currentProject) return;
     
-    // Calculate old status from tasks
+    const projectName = currentProject.name || 'Unknown';
+    const clientName = clients.find(c => c.id === currentProject.client_id)?.name || 'Unknown';
+    
+    // Calculate new task states (toggling the clicked task)
+    const updatedTasks = currentProject.tasks.map(t => 
+      t.id === taskId ? { ...t, completed: !currentValue } : t
+    );
+    
+    // Calculate statuses
     const oldAllComplete = currentProject.tasks.every(t => t.completed);
-    const oldHasRevisions = currentProject.revisions?.length > 0;
-    const oldStatus = oldAllComplete ? 'completed' : oldHasRevisions ? 'revision' : 'progress';
+    const newAllComplete = updatedTasks.every(t => t.completed);
+    const hasRevisions = (currentProject.revisions?.length || 0) > 0;
     
-    // Calculate what the new status will be
-    const updatedTasks = currentProject.tasks.map(t => t.id === taskId ? { ...t, completed: !currentValue } : t);
-    const allComplete = updatedTasks.every(t => t.completed);
-    const hasRevisions = currentProject.revisions?.length > 0;
-    const newStatus = allComplete ? 'completed' : hasRevisions ? 'revision' : 'progress';
+    const oldStatus = oldAllComplete ? 'completed' : hasRevisions ? 'revision' : 'progress';
+    const newStatus = newAllComplete ? 'completed' : hasRevisions ? 'revision' : 'progress';
+    
+    console.log('Status change:', { oldStatus, newStatus, oldAllComplete, newAllComplete });
     
     // Update local state immediately
-    setProjects(prev => prev.map(p => p.id !== projectId ? p : { ...p, tasks: updatedTasks, status: newStatus }));
+    setProjects(prev => prev.map(p => 
+      p.id !== projectId ? p : { ...p, tasks: updatedTasks, status: newStatus }
+    ));
     
     try { 
-      // Save task change
       await db.updateTask(taskId, { completed: !currentValue });
-      
-      // Always save status to database
       await db.updateProject(projectId, { status: newStatus });
       
       // Send notification if status changed
       if (oldStatus !== newStatus) {
+        console.log('Sending notification for status change to:', newStatus);
         if (newStatus === 'completed') {
-          fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'project_complete', data: { projectName, clientName } }) }).catch(console.error);
+          fetch('/api/notify', { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ type: 'project_complete', data: { projectName, clientName } }) 
+          }).then(r => console.log('Notification sent:', r.ok)).catch(console.error);
         } else if (newStatus === 'revision') {
-          fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'project_revision', data: { projectName, clientName } }) }).catch(console.error);
+          fetch('/api/notify', { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ type: 'project_revision', data: { projectName, clientName } }) 
+          }).then(r => console.log('Notification sent:', r.ok)).catch(console.error);
         }
       }
-    } catch (e) { console.error(e); await refreshData(); }
+    } catch (e) { 
+      console.error('Error in toggleTask:', e); 
+      await refreshData(); 
+    }
   };
 
   const handleFileUpload = async (projectId, taskId, files) => {
@@ -264,11 +280,27 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       const previouslySentFiles = project.tasks.filter(t => t.is_client_task && t.sent && !taskIds.includes(t.id)).map(t => ({ type: t.text.replace('Submit ', '').replace(' to client', ''), name: t.file_name }));
       const res = await fetch('/api/send-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: client.email, projectName: project.name, clientName: client.name, magicLinkToken: magicLink.token, files, pendingFiles, previouslySentFiles }) });
       if (!res.ok) throw new Error('Email failed');
-      setProjects(prev => prev.map(p => p.id !== project.id ? p : { ...p, tasks: p.tasks.map(t => taskIds.includes(t.id) ? { ...t, sent: true, completed: true } : t) }));
-      await Promise.all(taskIds.map(id => db.updateTask(id, { sent: true, completed: true, sent_at: new Date().toISOString() })));
       
-      // Send success notification
+      // Update tasks to sent/completed
+      const updatedTasks = project.tasks.map(t => taskIds.includes(t.id) ? { ...t, sent: true, completed: true } : t);
+      const allComplete = updatedTasks.every(t => t.completed);
+      const hasRevisions = (project.revisions?.length || 0) > 0;
+      const newStatus = allComplete ? 'completed' : hasRevisions ? 'revision' : 'progress';
+      
+      // Update local state with new status
+      setProjects(prev => prev.map(p => p.id !== project.id ? p : { ...p, tasks: updatedTasks, status: newStatus }));
+      
+      // Save to database
+      await Promise.all(taskIds.map(id => db.updateTask(id, { sent: true, completed: true, sent_at: new Date().toISOString() })));
+      await db.updateProject(project.id, { status: newStatus });
+      
+      // Send success notification for files sent
       fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'files_sent', data: { success: true, projectName: project.name, clientName: client.name, clientEmail: client.email, files: fileNames } }) }).catch(console.error);
+      
+      // Send completed notification if all tasks are done
+      if (newStatus === 'completed') {
+        fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'project_complete', data: { projectName: project.name, clientName: client.name } }) }).catch(console.error);
+      }
       
       return true;
     } catch (e) { 
