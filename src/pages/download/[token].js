@@ -10,7 +10,6 @@ export default function DownloadPage() {
   const [error, setError] = useState(null);
   const [data, setData] = useState(null);
   const [downloaded, setDownloaded] = useState({});
-  const [downloading, setDownloading] = useState({});
 
   useEffect(() => {
     if (!token) return;
@@ -37,58 +36,26 @@ export default function DownloadPage() {
     loadData();
   }, [token]);
 
-  const handleDownload = async (file) => {
-    setDownloading(prev => ({ ...prev, [file.id]: true }));
-    
-    try {
-      // Fetch the file and force download
-      const response = await fetch(file.url);
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = file.name || 'download';
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
-      setDownloaded(prev => ({ ...prev, [file.id]: true }));
-    } catch (err) {
-      // Fallback to opening in new tab if fetch fails (e.g., CORS issues)
-      console.error('Download error:', err);
-      window.open(file.url, '_blank');
-      setDownloaded(prev => ({ ...prev, [file.id]: true }));
-    } finally {
-      setDownloading(prev => ({ ...prev, [file.id]: false }));
-    }
+  const handleDownload = (file) => {
+    // Trigger download immediately - let browser/iOS handle it in background
+    const a = document.createElement('a');
+    a.href = file.url;
+    a.download = file.name || 'download';
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setDownloaded(prev => ({ ...prev, [file.id]: true }));
   };
 
-  // For iOS - download files one at a time with user interaction
-  const [downloadQueue, setDownloadQueue] = useState([]);
-  const [currentDownloadIndex, setCurrentDownloadIndex] = useState(0);
-  const [showDownloadAllModal, setShowDownloadAllModal] = useState(false);
-
-  const startDownloadAll = () => {
-    setDownloadQueue(data.files);
-    setCurrentDownloadIndex(0);
-    setShowDownloadAllModal(true);
-  };
-
-  const downloadNext = async () => {
-    if (currentDownloadIndex < downloadQueue.length) {
-      await handleDownload(downloadQueue[currentDownloadIndex]);
-      setCurrentDownloadIndex(prev => prev + 1);
-    } else {
-      setShowDownloadAllModal(false);
-      setDownloadQueue([]);
-      setCurrentDownloadIndex(0);
-    }
-  };
-
-  const cancelDownloadAll = () => {
-    setShowDownloadAllModal(false);
-    setDownloadQueue([]);
-    setCurrentDownloadIndex(0);
+  // For Download All - trigger all downloads with small delays
+  const handleDownloadAll = () => {
+    data.files.forEach((file, index) => {
+      setTimeout(() => {
+        handleDownload(file);
+      }, index * 300); // Small delay between each
+    });
   };
 
   if (loading) {
@@ -138,17 +105,7 @@ export default function DownloadPage() {
 
           {/* Files list */}
           <div className="p-4 sm:p-6">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="font-semibold">Files ({data?.files?.length})</h2>
-              {data?.files?.length > 1 && (
-                <button
-                  onClick={startDownloadAll}
-                  className="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-purple-700 whitespace-nowrap"
-                >
-                  📥 Download All
-                </button>
-              )}
-            </div>
+            <h2 className="font-semibold mb-4">Files ({data?.files?.length})</h2>
 
             <div className="space-y-3">
               {data?.files?.map(file => (
@@ -173,16 +130,13 @@ export default function DownloadPage() {
                   </div>
                   <button
                     onClick={() => handleDownload(file)}
-                    disabled={downloading[file.id]}
                     className={`w-full py-3 rounded-lg text-sm font-medium transition-colors ${
                       downloaded[file.id]
                         ? 'bg-green-100 text-green-700'
-                        : downloading[file.id]
-                        ? 'bg-purple-300 text-white cursor-wait'
                         : 'bg-purple-600 text-white hover:bg-purple-700 active:bg-purple-800'
                     }`}
                   >
-                    {downloading[file.id] ? '⏳ Downloading...' : downloaded[file.id] ? '✓ Downloaded' : '📥 Download'}
+                    {downloaded[file.id] ? '✓ Downloaded' : '📥 Download'}
                   </button>
                 </div>
               ))}
@@ -203,55 +157,9 @@ export default function DownloadPage() {
 
         {/* Footer */}
         <p className="text-center text-gray-400 text-sm mt-6">
-          This link expires in 7 days • Questions? Reply to the email
+          This link expires in 7 days • Questions? Contact <a href="mailto:contact@dxtr.au" className="text-purple-600">contact@dxtr.au</a>
         </p>
       </div>
-
-      {/* Download All Modal - for iOS compatibility */}
-      {showDownloadAllModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl max-w-sm w-full p-6 text-center">
-            <div className="text-4xl mb-4">📥</div>
-            <h2 className="text-lg font-bold mb-2">
-              Downloading {currentDownloadIndex + 1} of {downloadQueue.length}
-            </h2>
-            <p className="text-gray-600 mb-4">
-              {currentDownloadIndex < downloadQueue.length 
-                ? downloadQueue[currentDownloadIndex]?.type 
-                : 'All done!'}
-            </p>
-            <div className="w-full bg-gray-200 rounded-full h-2 mb-6">
-              <div 
-                className="bg-purple-600 h-2 rounded-full transition-all"
-                style={{ width: `${((currentDownloadIndex) / downloadQueue.length) * 100}%` }}
-              />
-            </div>
-            {currentDownloadIndex < downloadQueue.length ? (
-              <div className="flex gap-3">
-                <button
-                  onClick={cancelDownloadAll}
-                  className="flex-1 py-3 border border-gray-300 rounded-lg font-medium"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={downloadNext}
-                  className="flex-1 py-3 bg-purple-600 text-white rounded-lg font-medium hover:bg-purple-700"
-                >
-                  {currentDownloadIndex === 0 ? 'Start' : 'Next File'}
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={cancelDownloadAll}
-                className="w-full py-3 bg-green-600 text-white rounded-lg font-medium"
-              >
-                ✓ Done
-              </button>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
