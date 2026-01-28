@@ -17,13 +17,13 @@ export default async function handler(req, res) {
     
     // Resend webhook event types:
     // email.sent, email.delivered, email.delivery_delayed
-    // email.bounced, email.complained, email.failed
+    // email.bounced, email.complained, email.failed, email.suppressed
     
     const eventType = event.type;
     const emailData = event.data;
     
     // Only notify on problems
-    if (!['email.bounced', 'email.complained', 'email.delivery_delayed', 'email.failed'].includes(eventType)) {
+    if (!['email.bounced', 'email.complained', 'email.delivery_delayed', 'email.failed', 'email.suppressed'].includes(eventType)) {
       // Log successful deliveries but don't notify
       console.log(`Email event: ${eventType} for ${emailData?.to?.[0] || 'unknown'}`);
       return res.status(200).json({ received: true });
@@ -104,6 +104,26 @@ export default async function handler(req, res) {
               <tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;"><strong>Error:</strong></td><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${emailData?.error?.message || 'Unknown error'}</td></tr>
             </table>
             <p style="color: #ef4444; font-weight: bold;">⚠️ Action required: The client did NOT receive this email. Contact them directly or try resending.</p>
+            <p style="color: #6b7280; font-size: 12px; margin-top: 20px;">
+              Received at ${new Date().toLocaleString('en-AU', { timeZone: 'Australia/Perth' })}
+            </p>
+          </div>
+        `;
+        break;
+        
+      case 'email.suppressed':
+        subject = `🚫 EMAIL SUPPRESSED: ${recipientEmail}`;
+        html = `
+          <div style="font-family: sans-serif; max-width: 600px;">
+            <h2 style="color: #ef4444;">🚫 Email Suppressed - Not Delivered</h2>
+            <p>This email was blocked because the recipient is on the suppression list (due to a previous bounce or complaint).</p>
+            <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+              <tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;"><strong>To:</strong></td><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${recipientEmail}</td></tr>
+              <tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;"><strong>Subject:</strong></td><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${emailSubject}</td></tr>
+              <tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;"><strong>Reason:</strong></td><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${emailData?.suppressed?.reason || 'On suppression list'}</td></tr>
+              <tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;"><strong>Type:</strong></td><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${emailData?.suppressed?.type || 'Unknown'}</td></tr>
+            </table>
+            <p style="color: #ef4444; font-weight: bold;">⚠️ Action required: The client did NOT receive this email. Their email address may be invalid or they previously marked emails as spam. Contact them directly with a different email address.</p>
             <p style="color: #6b7280; font-size: 12px; margin-top: 20px;">
               Received at ${new Date().toLocaleString('en-AU', { timeZone: 'Australia/Perth' })}
             </p>
