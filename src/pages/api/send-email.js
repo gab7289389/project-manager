@@ -51,8 +51,14 @@ export default async function handler(req, res) {
             </a>
             
             <p style="color: #6b7280; font-size: 14px; margin-top: 30px;">
-              This link will expire in 7 days. If you have any questions, please reply to this email.
+              This link will expire in 7 days.
             </p>
+            
+            <div style="background: #fef3c7; border: 1px solid #f59e0b; padding: 12px 15px; border-radius: 8px; margin-top: 20px;">
+              <p style="margin: 0; color: #92400e; font-size: 13px;">
+                <strong>📧 Questions?</strong> Please don't reply to this email. Instead, contact us at <a href="mailto:contact@dxtr.au" style="color: #7c3aed;">contact@dxtr.au</a>
+              </p>
+            </div>
           </div>
           
           <p style="text-align: center; color: #9ca3af; font-size: 12px; margin-top: 20px;">
@@ -72,6 +78,8 @@ ${fileList}
 Download here: ${downloadUrl}
 
 This link will expire in 7 days.
+
+Questions? Please don't reply to this email. Instead, contact us at contact@dxtr.au
       `.trim()
     });
 
