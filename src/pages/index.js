@@ -494,11 +494,21 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                                   )}
                                 </div>
                               ) : (
-                                <label className="block border-2 border-dashed border-gray-300 rounded-lg p-3 text-center cursor-pointer hover:bg-gray-50">
-                                  <p className="text-gray-400 text-sm">Click to upload</p>
+                                <div 
+                                  className="border-2 border-dashed border-gray-300 rounded-lg p-3 text-center cursor-pointer hover:bg-gray-50 hover:border-purple-400 transition-colors"
+                                  onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('border-purple-500', 'bg-purple-50'); }}
+                                  onDragLeave={e => { e.preventDefault(); e.currentTarget.classList.remove('border-purple-500', 'bg-purple-50'); }}
+                                  onDrop={e => { 
+                                    e.preventDefault(); 
+                                    e.currentTarget.classList.remove('border-purple-500', 'bg-purple-50');
+                                    if (e.dataTransfer.files?.length) handleFileUpload(project.id, t.id, e.dataTransfer.files);
+                                  }}
+                                  onClick={() => document.getElementById(`file-${t.id}`).click()}
+                                >
+                                  <p className="text-gray-400 text-sm">📁 Drop files or click to upload</p>
                                   <p className="text-gray-300 text-xs">Multiple files allowed</p>
-                                  <input type="file" multiple className="hidden" onChange={e => e.target.files?.length && handleFileUpload(project.id, t.id, e.target.files)} />
-                                </label>
+                                  <input id={`file-${t.id}`} type="file" multiple className="hidden" onChange={e => e.target.files?.length && handleFileUpload(project.id, t.id, e.target.files)} />
+                                </div>
                               )}
                             </div>);
                           })}</div>
