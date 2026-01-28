@@ -39,16 +39,14 @@ export default function DownloadPage() {
     loadData();
   }, [token]);
 
-  // Force download by fetching blob and triggering download
+  // Force download by fetching blob
   const handleDownload = async (file) => {
     setDownloading(prev => ({ ...prev, [file.id]: true }));
     
     try {
-      // Fetch the file as blob to force download
       const response = await fetch(file.url);
       const blob = await response.blob();
       
-      // Create blob URL and trigger download
       const blobUrl = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = blobUrl;
@@ -57,7 +55,6 @@ export default function DownloadPage() {
       document.body.appendChild(a);
       a.click();
       
-      // Cleanup
       setTimeout(() => {
         window.URL.revokeObjectURL(blobUrl);
         document.body.removeChild(a);
@@ -66,7 +63,7 @@ export default function DownloadPage() {
       setDownloaded(prev => ({ ...prev, [file.id]: true }));
     } catch (err) {
       console.error('Download error:', err);
-      // Fallback to direct link
+      // Fallback
       const a = document.createElement('a');
       a.href = file.url;
       a.download = file.name || 'download';
@@ -105,12 +102,11 @@ export default function DownloadPage() {
   }
 
   const readyFiles = data?.files?.filter(f => f.url) || [];
-  const pendingFiles = data?.files?.filter(f => !f.url) || [];
+  const pendingFiles = data?.pending_files || [];
   const allDownloaded = readyFiles.length > 0 && readyFiles.every(f => downloaded[f.id]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50">
-      {/* Header */}
       <div className="bg-gradient-to-r from-purple-700 to-purple-900 text-white py-8 px-4">
         <div className="max-w-2xl mx-auto text-center">
           <div className="text-4xl mb-3">📁</div>
@@ -119,28 +115,22 @@ export default function DownloadPage() {
         </div>
       </div>
 
-      {/* Content */}
       <div className="max-w-2xl mx-auto p-4 -mt-6">
         <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
-          {/* Project info */}
           <div className="p-4 sm:p-6 border-b">
             <p className="text-sm text-gray-500 mb-1">Project</p>
             <p className="font-semibold text-lg">{data?.project_name}</p>
           </div>
 
-          {/* Ready files */}
           {readyFiles.length > 0 && (
             <div className="p-4 sm:p-6">
               <h2 className="font-semibold mb-4">✅ Ready for Download ({readyFiles.length})</h2>
-
               <div className="space-y-3">
                 {readyFiles.map(file => (
                   <div
                     key={file.id}
                     className={`p-4 rounded-xl border-2 ${
-                      downloaded[file.id] 
-                        ? 'bg-green-50 border-green-200' 
-                        : 'bg-gray-50 border-gray-200'
+                      downloaded[file.id] ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'
                     }`}
                   >
                     <div className="flex items-center gap-3 mb-3">
@@ -173,8 +163,7 @@ export default function DownloadPage() {
             </div>
           )}
 
-          {/* Pending files section */}
-          {pendingFiles.length > 0 && (
+          {pendingFiles && pendingFiles.length > 0 && (
             <div className="p-4 sm:p-6 border-t bg-gray-50">
               <h2 className="font-semibold mb-4 text-gray-600">⏳ Still in Progress ({pendingFiles.length})</h2>
               <div className="space-y-2">
@@ -195,7 +184,6 @@ export default function DownloadPage() {
             </div>
           )}
 
-          {/* Success message */}
           {allDownloaded && (
             <div className="p-6 bg-green-50 border-t border-green-200">
               <div className="text-center">
@@ -207,7 +195,6 @@ export default function DownloadPage() {
           )}
         </div>
 
-        {/* Footer */}
         <p className="text-center text-gray-400 text-sm mt-6">
           This link expires in 7 days • Questions? Contact <a href="mailto:contact@dxtr.au" className="text-purple-600">contact@dxtr.au</a>
         </p>
