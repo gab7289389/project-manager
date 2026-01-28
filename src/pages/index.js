@@ -134,14 +134,35 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
   });
 
   const toggleTask = async (projectId, taskId, currentValue) => {
+    let oldStatus = '';
+    let newStatus = '';
+    let projectName = '';
+    let clientName = '';
+    
     setProjects(prev => prev.map(p => {
       if (p.id !== projectId) return p;
+      oldStatus = p.status;
+      projectName = p.name;
+      clientName = clients.find(c => c.id === p.client_id)?.name || 'Unknown';
       const updatedTasks = p.tasks.map(t => t.id === taskId ? { ...t, completed: !currentValue } : t);
       const allComplete = updatedTasks.every(t => t.completed);
       const hasRevisions = p.revisions?.length > 0;
-      return { ...p, tasks: updatedTasks, status: allComplete ? 'completed' : hasRevisions ? 'revision' : 'progress' };
+      newStatus = allComplete ? 'completed' : hasRevisions ? 'revision' : 'progress';
+      return { ...p, tasks: updatedTasks, status: newStatus };
     }));
-    try { await db.updateTask(taskId, { completed: !currentValue }); } catch (e) { console.error(e); await refreshData(); }
+    
+    try { 
+      await db.updateTask(taskId, { completed: !currentValue });
+      
+      // Send notification if status changed to completed or revision
+      if (oldStatus !== newStatus) {
+        if (newStatus === 'completed') {
+          fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'project_complete', data: { projectName, clientName } }) }).catch(console.error);
+        } else if (newStatus === 'revision') {
+          fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'project_revision', data: { projectName, clientName } }) }).catch(console.error);
+        }
+      }
+    } catch (e) { console.error(e); await refreshData(); }
   };
 
   const handleFileUpload = async (projectId, taskId, files) => {
@@ -211,6 +232,7 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
   };
 
   const sendToClient = async (project, taskIds, client) => {
+    const fileNames = project.tasks.filter(t => taskIds.includes(t.id)).map(t => t.text.replace('Submit ', '').replace(' to client', ''));
     try {
       setSaving(true);
       // Get ALL client task IDs (sent + being sent now + pending) for the magic link
@@ -229,16 +251,27 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       if (!res.ok) throw new Error('Email failed');
       setProjects(prev => prev.map(p => p.id !== project.id ? p : { ...p, tasks: p.tasks.map(t => taskIds.includes(t.id) ? { ...t, sent: true, completed: true } : t) }));
       await Promise.all(taskIds.map(id => db.updateTask(id, { sent: true, completed: true, sent_at: new Date().toISOString() })));
+      
+      // Send success notification
+      fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'files_sent', data: { success: true, projectName: project.name, clientName: client.name, clientEmail: client.email, files: fileNames } }) }).catch(console.error);
+      
       return true;
-    } catch (e) { console.error(e); alert('Error: ' + e.message); return false; }
+    } catch (e) { 
+      console.error(e); 
+      alert('Error: ' + e.message);
+      // Send failure notification
+      fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'files_sent', data: { success: false, projectName: project.name, clientName: client.name, clientEmail: client.email, files: fileNames, error: e.message } }) }).catch(console.error);
+      return false; 
+    }
     finally { setSaving(false); }
   };
   
   // Resend all sent files to client (for expired links)
   const resendToClient = async (project, client) => {
+    const sentTasks = project.tasks.filter(t => t.is_client_task && t.sent && t.file_url);
+    const fileNames = sentTasks.map(t => t.text.replace('Submit ', '').replace(' to client', ''));
     try {
       setSaving(true);
-      const sentTasks = project.tasks.filter(t => t.is_client_task && t.sent && t.file_url);
       if (sentTasks.length === 0) {
         alert('No files have been sent to this client yet');
         return false;
@@ -252,8 +285,17 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       
       const res = await fetch('/api/send-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: client.email, projectName: project.name, clientName: client.name, magicLinkToken: magicLink.token, files, pendingFiles, previouslySentFiles: [], isResend: true }) });
       if (!res.ok) throw new Error('Email failed');
+      
+      // Send success notification for resend
+      fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'files_sent', data: { success: true, projectName: project.name + ' (RESEND)', clientName: client.name, clientEmail: client.email, files: fileNames } }) }).catch(console.error);
+      
       return true;
-    } catch (e) { console.error(e); alert('Error: ' + e.message); return false; }
+    } catch (e) { 
+      console.error(e); 
+      alert('Error: ' + e.message);
+      fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'files_sent', data: { success: false, projectName: project.name + ' (RESEND)', clientName: client.name, clientEmail: client.email, files: fileNames, error: e.message } }) }).catch(console.error);
+      return false; 
+    }
     finally { setSaving(false); }
   };
 
@@ -265,6 +307,10 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       { id: tempId + '-1', text: `Submit ${data.type} Revision to editor`, is_editor_task: true, is_client_task: false, completed: false },
       { id: tempId + '-2', text: `Submit ${data.type} Revision to client`, is_editor_task: false, is_client_task: true, completed: false }
     ];
+    
+    // Get project and client info for notification
+    const project = projects.find(p => p.id === projectId);
+    const clientName = clients.find(c => c.id === project?.client_id)?.name || 'Unknown';
     
     // Optimistic update
     setProjects(prev => prev.map(p => p.id !== projectId ? p : {
@@ -279,6 +325,9 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
         { project_id: projectId, text: `Submit ${data.type} Revision to editor`, is_editor_task: true },
         { project_id: projectId, text: `Submit ${data.type} Revision to client`, is_client_task: true }
       ]);
+      
+      // Send revision notification
+      fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'project_revision', data: { projectName: project?.name, clientName, revisionNote: `${data.type}: ${data.note || 'Revision requested'}` } }) }).catch(console.error);
       
       // Update with real IDs from database without full refresh
       if (result && result.revision && result.tasks) {
