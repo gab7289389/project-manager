@@ -171,6 +171,11 @@ export const updateRevision = async (id, updates) => {
 };
 
 export const deleteRevision = async (id) => {
+  // First delete associated tasks
+  const { error: tasksError } = await supabase.from('tasks').delete().eq('revision_id', id);
+  if (tasksError) throw tasksError;
+  
+  // Then delete the revision
   const { error } = await supabase.from('revisions').delete().eq('id', id);
   if (error) throw error;
 };
@@ -206,12 +211,17 @@ export const markMagicLinkAccessed = async (token) => {
 };
 
 // FILE STORAGE
-export const uploadFile = async (projectId, file) => {
+export const uploadFile = async (projectId, file, onProgress) => {
   const fileName = `${projectId}/${Date.now()}-${file.name}`;
   
   const { data, error } = await supabase.storage
     .from('project-files')
-    .upload(fileName, file);
+    .upload(fileName, file, {
+      cacheControl: '3600',
+      upsert: false,
+      // Note: Supabase has a 50MB default limit. For larger files,
+      // you need to increase the limit in Supabase Dashboard > Storage > Policies
+    });
   
   if (error) throw error;
   
