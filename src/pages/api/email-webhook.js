@@ -7,47 +7,63 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // Return 200 immediately to prevent webhook retries
-  res.status(200).json({ received: true });
-
   try {
-    const event = req.body;
-    console.log('Webhook received:', event.type);
+    const payload = req.body;
+    
+    // Log the full payload to debug
+    console.log('Full webhook payload:', JSON.stringify(payload, null, 2));
 
-    if (event.type === 'email.received') {
-      const from = event.data.from || '';
-      const subject = event.data.subject || '(No subject)';
+    // Resend webhook structure: { type, created_at, data: { ... } }
+    const type = payload.type;
+    const data = payload.data || payload;
+
+    // Handle incoming email events
+    if (type === 'email.received' || type === 'email.delivered' || data.from) {
+      const from = data.from || '';
+      const subject = data.subject || '(No subject)';
       
-      // Extract email address
+      // For Resend inbound emails, the body might be in these fields
+      const text = data.text || data.body || data.plain_body || data.text_plain || '';
+      const html = data.html || data.html_body || data.body_html || '';
+      
+      // If still no content, show the raw data for debugging
+      let content = html || text;
+      if (!content || content.trim() === '') {
+        content = `<pre style="background:#f5f5f5;padding:15px;border-radius:8px;overflow:auto;font-size:12px;">${JSON.stringify(data, null, 2)}</pre>`;
+      }
+      
+      // Extract email address from "Name <email>" format if needed
       const fromEmail = from.includes('<') 
         ? from.match(/<(.+)>/)?.[1] || from 
         : from;
-
-      // Forward notification (without fetching content to avoid rate limits)
+      
+      // Forward the email to contact@dxtr.au
       await resend.emails.send({
         from: 'DXTR Notifications <notif@send.dxtr.au>',
         to: ['contact@dxtr.au'],
-        subject: `📧 Reply from ${fromEmail}: ${subject}`,
+        subject: `📧 Reply from ${fromEmail}`,
         html: `
           <div style="padding: 20px; background: #7c3aed; color: white; margin-bottom: 20px;">
-            <h2 style="margin: 0 0 10px 0;">📧 Client Reply Received</h2>
+            <h2 style="margin: 0 0 10px 0;">📧 Client Reply</h2>
             <p style="margin: 0; font-size: 20px;"><strong>${fromEmail}</strong></p>
             <p style="margin: 10px 0 0 0; font-size: 14px; opacity: 0.9;">↑ Copy this email to reply to the client</p>
           </div>
           <div style="padding: 15px; background: #f5f5f5; margin-bottom: 20px;">
-            <strong>Subject:</strong> ${subject}
+            <strong>Original Subject:</strong> ${subject}
           </div>
           <div style="padding: 20px; border: 1px solid #ddd; border-radius: 8px;">
-            <p>A client has replied to your email. Due to rate limits, the message content is not included.</p>
-            <p>Please check your <a href="https://resend.com/emails">Resend Dashboard</a> to view the full message, or reply directly to <strong>${fromEmail}</strong>.</p>
+            ${content}
           </div>
         `,
-        text: `Client Reply from ${fromEmail}\n\nSubject: ${subject}\n\nPlease check your Resend Dashboard to view the full message.`
+        text: `CLIENT REPLY FROM: ${fromEmail}\n\nSubject: ${subject}\n\nMessage:\n${text || 'See HTML version'}`
       });
 
-      console.log('Notification sent for email from:', fromEmail);
+      console.log('Email forwarded from:', fromEmail);
     }
+
+    return res.status(200).json({ success: true });
   } catch (error) {
-    console.error('Webhook processing error:', error);
+    console.error('Webhook error:', error);
+    return res.status(500).json({ error: 'Webhook processing failed' });
   }
 }
