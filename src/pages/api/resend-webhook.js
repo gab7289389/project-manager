@@ -17,13 +17,13 @@ export default async function handler(req, res) {
     
     // Resend webhook event types:
     // email.sent, email.delivered, email.delivery_delayed
-    // email.bounced, email.complained
+    // email.bounced, email.complained, email.failed
     
     const eventType = event.type;
     const emailData = event.data;
     
     // Only notify on problems
-    if (!['email.bounced', 'email.complained', 'email.delivery_delayed'].includes(eventType)) {
+    if (!['email.bounced', 'email.complained', 'email.delivery_delayed', 'email.failed'].includes(eventType)) {
       // Log successful deliveries but don't notify
       console.log(`Email event: ${eventType} for ${emailData?.to?.[0] || 'unknown'}`);
       return res.status(200).json({ received: true });
@@ -85,6 +85,25 @@ export default async function handler(req, res) {
               <tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;"><strong>Subject:</strong></td><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${emailSubject}</td></tr>
             </table>
             <p style="color: #6b7280;">The email service will continue trying to deliver. You'll be notified if it bounces.</p>
+            <p style="color: #6b7280; font-size: 12px; margin-top: 20px;">
+              Received at ${new Date().toLocaleString('en-AU', { timeZone: 'Australia/Perth' })}
+            </p>
+          </div>
+        `;
+        break;
+        
+      case 'email.failed':
+        subject = `🚨 EMAIL FAILED: ${recipientEmail}`;
+        html = `
+          <div style="font-family: sans-serif; max-width: 600px;">
+            <h2 style="color: #ef4444;">🚨 Email Failed to Send</h2>
+            <p>An email completely failed to send.</p>
+            <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+              <tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;"><strong>To:</strong></td><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${recipientEmail}</td></tr>
+              <tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;"><strong>Subject:</strong></td><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${emailSubject}</td></tr>
+              <tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;"><strong>Error:</strong></td><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${emailData?.error?.message || 'Unknown error'}</td></tr>
+            </table>
+            <p style="color: #ef4444; font-weight: bold;">⚠️ Action required: The client did NOT receive this email. Contact them directly or try resending.</p>
             <p style="color: #6b7280; font-size: 12px; margin-top: 20px;">
               Received at ${new Date().toLocaleString('en-AU', { timeZone: 'Australia/Perth' })}
             </p>
