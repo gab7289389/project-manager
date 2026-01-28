@@ -10,6 +10,7 @@ export default function DownloadPage() {
   const [error, setError] = useState(null);
   const [data, setData] = useState(null);
   const [downloaded, setDownloaded] = useState({});
+  const [downloading, setDownloading] = useState({});
 
   useEffect(() => {
     if (!token) return;
@@ -36,26 +37,45 @@ export default function DownloadPage() {
     loadData();
   }, [token]);
 
-  const handleDownload = (file) => {
-    // Trigger download immediately - let browser/iOS handle it in background
-    const a = document.createElement('a');
-    a.href = file.url;
-    a.download = file.name || 'download';
-    a.target = '_blank';
-    a.rel = 'noopener noreferrer';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setDownloaded(prev => ({ ...prev, [file.id]: true }));
-  };
-
-  // For Download All - trigger all downloads with small delays
-  const handleDownloadAll = () => {
-    data.files.forEach((file, index) => {
+  // Force download by fetching blob and triggering download
+  const handleDownload = async (file) => {
+    setDownloading(prev => ({ ...prev, [file.id]: true }));
+    
+    try {
+      // Fetch the file as blob to force download
+      const response = await fetch(file.url);
+      const blob = await response.blob();
+      
+      // Create blob URL and trigger download
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = file.name || 'download';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      
+      // Cleanup
       setTimeout(() => {
-        handleDownload(file);
-      }, index * 300); // Small delay between each
-    });
+        window.URL.revokeObjectURL(blobUrl);
+        document.body.removeChild(a);
+      }, 100);
+      
+      setDownloaded(prev => ({ ...prev, [file.id]: true }));
+    } catch (err) {
+      console.error('Download error:', err);
+      // Fallback to direct link
+      const a = document.createElement('a');
+      a.href = file.url;
+      a.download = file.name || 'download';
+      a.target = '_blank';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setDownloaded(prev => ({ ...prev, [file.id]: true }));
+    } finally {
+      setDownloading(prev => ({ ...prev, [file.id]: false }));
+    }
   };
 
   if (loading) {
@@ -76,12 +96,15 @@ export default function DownloadPage() {
           <div className="text-6xl mb-4">😕</div>
           <h1 className="text-xl font-bold text-gray-800 mb-2">Link Expired</h1>
           <p className="text-gray-500">{error}</p>
+          <p className="text-sm text-gray-400 mt-4">Contact <a href="mailto:contact@dxtr.au" className="text-purple-600">contact@dxtr.au</a> for a new link</p>
         </div>
       </div>
     );
   }
 
-  const allDownloaded = data?.files?.every(f => downloaded[f.id]);
+  const readyFiles = data?.files?.filter(f => f.url) || [];
+  const pendingFiles = data?.files?.filter(f => !f.url) || [];
+  const allDownloaded = readyFiles.length > 0 && readyFiles.every(f => downloaded[f.id]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50">
@@ -103,45 +126,72 @@ export default function DownloadPage() {
             <p className="font-semibold text-lg">{data?.project_name}</p>
           </div>
 
-          {/* Files list */}
-          <div className="p-4 sm:p-6">
-            <h2 className="font-semibold mb-4">Files ({data?.files?.length})</h2>
+          {/* Ready files */}
+          {readyFiles.length > 0 && (
+            <div className="p-4 sm:p-6">
+              <h2 className="font-semibold mb-4">✅ Ready for Download ({readyFiles.length})</h2>
 
-            <div className="space-y-3">
-              {data?.files?.map(file => (
-                <div
-                  key={file.id}
-                  className={`p-4 rounded-xl border-2 ${
-                    downloaded[file.id] 
-                      ? 'bg-green-50 border-green-200' 
-                      : 'bg-gray-50 border-gray-200'
-                  }`}
-                >
-                  <div className="flex items-center gap-3 mb-3">
-                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                      downloaded[file.id] ? 'bg-green-100 text-green-600' : 'bg-purple-100 text-purple-600'
-                    }`}>
-                      {downloaded[file.id] ? '✓' : '📄'}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="font-medium truncate">{file.type}</p>
-                      <p className="text-xs text-gray-500 truncate">{file.name}</p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => handleDownload(file)}
-                    className={`w-full py-3 rounded-lg text-sm font-medium transition-colors ${
-                      downloaded[file.id]
-                        ? 'bg-green-100 text-green-700'
-                        : 'bg-purple-600 text-white hover:bg-purple-700 active:bg-purple-800'
+              <div className="space-y-3">
+                {readyFiles.map(file => (
+                  <div
+                    key={file.id}
+                    className={`p-4 rounded-xl border-2 ${
+                      downloaded[file.id] 
+                        ? 'bg-green-50 border-green-200' 
+                        : 'bg-gray-50 border-gray-200'
                     }`}
                   >
-                    {downloaded[file.id] ? '✓ Downloaded' : '📥 Download'}
-                  </button>
-                </div>
-              ))}
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                        downloaded[file.id] ? 'bg-green-100 text-green-600' : 'bg-purple-100 text-purple-600'
+                      }`}>
+                        {downloaded[file.id] ? '✓' : '📄'}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium truncate">{file.type}</p>
+                        <p className="text-xs text-gray-500 truncate">{file.name}</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => handleDownload(file)}
+                      disabled={downloading[file.id]}
+                      className={`w-full py-3 rounded-lg text-sm font-medium transition-colors ${
+                        downloading[file.id]
+                          ? 'bg-purple-200 text-purple-600'
+                          : downloaded[file.id]
+                          ? 'bg-green-100 text-green-700'
+                          : 'bg-purple-600 text-white hover:bg-purple-700 active:bg-purple-800'
+                      }`}
+                    >
+                      {downloading[file.id] ? '⏳ Downloading...' : downloaded[file.id] ? '✓ Downloaded' : '📥 Download'}
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
+
+          {/* Pending files section */}
+          {pendingFiles.length > 0 && (
+            <div className="p-4 sm:p-6 border-t bg-gray-50">
+              <h2 className="font-semibold mb-4 text-gray-600">⏳ Still in Progress ({pendingFiles.length})</h2>
+              <div className="space-y-2">
+                {pendingFiles.map((file, i) => (
+                  <div key={i} className="p-3 rounded-lg border-2 border-dashed border-gray-300 bg-white">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-gray-100 flex items-center justify-center text-gray-400">
+                        🔄
+                      </div>
+                      <div>
+                        <p className="font-medium text-gray-500">{file.type}</p>
+                        <p className="text-xs text-gray-400">Coming soon - we'll email you when ready</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Success message */}
           {allDownloaded && (
