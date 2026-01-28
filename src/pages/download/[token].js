@@ -17,7 +17,9 @@ export default function DownloadPage() {
     
     async function loadData() {
       try {
+        console.log('Loading magic link:', token);
         const result = await getMagicLink(token);
+        console.log('Magic link result:', result);
         
         if (!result || !result.valid) {
           setError('This link has expired or is invalid.');
@@ -27,7 +29,7 @@ export default function DownloadPage() {
         setData(result);
         await markMagicLinkAccessed(token);
       } catch (err) {
-        console.error(err);
+        console.error('Magic link error:', err);
         setError('Something went wrong. Please contact support.');
       } finally {
         setLoading(false);
