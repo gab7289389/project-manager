@@ -266,6 +266,13 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     const fileNames = project.tasks.filter(t => taskIds.includes(t.id)).map(t => t.text.replace('Submit ', '').replace(' to client', ''));
     try {
       setSaving(true);
+      
+      // Validate email before attempting to send
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(client.email)) {
+        throw new Error(`Invalid email format: ${client.email}`);
+      }
+      
       // Get ALL client task IDs (sent + being sent now + pending) for the magic link
       const allClientTaskIds = project.tasks.filter(t => t.is_client_task).map(t => t.id);
       // Separate pending tasks (no file) from tasks with files
@@ -278,8 +285,21 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       const pendingFiles = project.tasks.filter(t => t.is_client_task && !t.file_url && !taskIds.includes(t.id)).map(t => ({ type: t.text.replace('Submit ', '').replace(' to client', '') }));
       // Get previously sent files
       const previouslySentFiles = project.tasks.filter(t => t.is_client_task && t.sent && !taskIds.includes(t.id)).map(t => ({ type: t.text.replace('Submit ', '').replace(' to client', ''), name: t.file_name }));
-      const res = await fetch('/api/send-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: client.email, projectName: project.name, clientName: client.name, magicLinkToken: magicLink.token, files, pendingFiles, previouslySentFiles }) });
-      if (!res.ok) throw new Error('Email failed');
+      
+      const res = await fetch('/api/send-email', { 
+        method: 'POST', 
+        headers: { 'Content-Type': 'application/json' }, 
+        body: JSON.stringify({ to: client.email, projectName: project.name, clientName: client.name, magicLinkToken: magicLink.token, files, pendingFiles, previouslySentFiles }) 
+      });
+      
+      const resData = await res.json();
+      
+      if (!res.ok) {
+        // Get detailed error from response
+        const errorMsg = resData.error || 'Email failed to send';
+        const errorType = resData.errorType || 'unknown';
+        throw new Error(`${errorMsg} (${errorType})`);
+      }
       
       // Update tasks to sent/completed
       const updatedTasks = project.tasks.map(t => taskIds.includes(t.id) ? { ...t, sent: true, completed: true } : t);
@@ -304,9 +324,9 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       
       return true;
     } catch (e) { 
-      console.error(e); 
-      alert('Error: ' + e.message);
-      // Send failure notification
+      console.error('Send to client error:', e); 
+      alert('❌ Failed to send: ' + e.message);
+      // Send failure notification with detailed error
       fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'files_sent', data: { success: false, projectName: project.name, clientName: client.name, clientEmail: client.email, files: fileNames, error: e.message } }) }).catch(console.error);
       return false; 
     }
@@ -323,6 +343,13 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
         alert('No files have been sent to this client yet');
         return false;
       }
+      
+      // Validate email
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(client.email)) {
+        throw new Error(`Invalid email format: ${client.email}`);
+      }
+      
       const sentTaskIds = sentTasks.map(t => t.id);
       const pendingTaskIds = project.tasks.filter(t => t.is_client_task && !t.file_url).map(t => t.id);
       
@@ -331,15 +358,22 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       const pendingFiles = project.tasks.filter(t => t.is_client_task && !t.file_url).map(t => ({ type: t.text.replace('Submit ', '').replace(' to client', '') }));
       
       const res = await fetch('/api/send-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: client.email, projectName: project.name, clientName: client.name, magicLinkToken: magicLink.token, files, pendingFiles, previouslySentFiles: [], isResend: true }) });
-      if (!res.ok) throw new Error('Email failed');
+      
+      const resData = await res.json();
+      
+      if (!res.ok) {
+        const errorMsg = resData.error || 'Email failed to send';
+        const errorType = resData.errorType || 'unknown';
+        throw new Error(`${errorMsg} (${errorType})`);
+      }
       
       // Send success notification for resend
       fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'files_sent', data: { success: true, projectName: project.name + ' (RESEND)', clientName: client.name, clientEmail: client.email, files: fileNames } }) }).catch(console.error);
       
       return true;
     } catch (e) { 
-      console.error(e); 
-      alert('Error: ' + e.message);
+      console.error('Resend error:', e); 
+      alert('❌ Failed to resend: ' + e.message);
       fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'files_sent', data: { success: false, projectName: project.name + ' (RESEND)', clientName: client.name, clientEmail: client.email, files: fileNames, error: e.message } }) }).catch(console.error);
       return false; 
     }
