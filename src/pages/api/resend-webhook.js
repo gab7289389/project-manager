@@ -22,9 +22,42 @@ export default async function handler(req, res) {
     const eventType = event.type;
     const emailData = event.data;
     
+    // Notify on successful delivery
+    if (eventType === 'email.delivered') {
+      const recipientEmail = emailData?.to?.[0] || 'Unknown';
+      const emailSubject = emailData?.subject || 'Unknown subject';
+      
+      // Extract project/client info from subject line
+      // Subject format: "Your files are ready: ProjectName" or "📎 Download link renewed: ProjectName"
+      const projectMatch = emailSubject.match(/(?:ready|renewed): (.+)$/);
+      const projectName = projectMatch ? projectMatch[1] : 'Unknown project';
+      
+      const { error } = await resend.emails.send({
+        from: 'DXTR Internal <internal@send.dxtr.au>',
+        to: NOTIFY_EMAILS,
+        subject: `✅ Files delivered to ${recipientEmail}`,
+        html: `
+          <div style="font-family: sans-serif; max-width: 600px;">
+            <h2 style="color: #10b981;">✅ Email Successfully Delivered</h2>
+            <p>The client has received the email.</p>
+            <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+              <tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;"><strong>To:</strong></td><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${recipientEmail}</td></tr>
+              <tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;"><strong>Project:</strong></td><td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${projectName}</td></tr>
+            </table>
+            <p style="color: #6b7280; font-size: 12px; margin-top: 20px;">
+              Delivered at ${new Date().toLocaleString('en-AU', { timeZone: 'Australia/Perth' })}
+            </p>
+          </div>
+        `
+      });
+      
+      if (error) console.error('Failed to send delivery notification:', error);
+      return res.status(200).json({ received: true });
+    }
+    
     // Only notify on problems
     if (!['email.bounced', 'email.complained', 'email.delivery_delayed', 'email.failed', 'email.suppressed'].includes(eventType)) {
-      // Log successful deliveries but don't notify
+      // Log other events but don't notify
       console.log(`Email event: ${eventType} for ${emailData?.to?.[0] || 'unknown'}`);
       return res.status(200).json({ received: true });
     }
