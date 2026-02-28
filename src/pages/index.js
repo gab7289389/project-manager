@@ -136,7 +136,11 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
   const [creatingProject, setCreatingProject] = useState(false);
 
   const getClient = id => clients.find(c => c.id === id);
-  const filtered = projects.filter(p => clientFilter === 'all' || p.client_id === clientFilter).sort((a, b) => {
+  const filtered = projects.filter(p => {
+    if (clientFilter === 'all') return true;
+    if (clientFilter === 'orphaned') return !p.client_id || !clients.find(c => c.id === p.client_id);
+    return p.client_id === clientFilter;
+  }).sort((a, b) => {
     if (a.status === 'completed' && b.status !== 'completed') return 1;
     if (b.status === 'completed' && a.status !== 'completed') return -1;
     return new Date(a.due_date) - new Date(b.due_date);
@@ -531,13 +535,14 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
               <div className="flex items-center gap-2 sm:gap-4 flex-1">
                 <button onClick={() => setSidebarOpen(true)} className="lg:hidden text-xl">☰</button>
                 <h1 className="text-lg font-bold hidden sm:block">Projects</h1>
-                <select value={clientFilter} onChange={e => setClientFilter(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm"><option value="all">All Clients</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+                <select value={clientFilter} onChange={e => setClientFilter(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm"><option value="all">All Clients</option><option value="orphaned">⚠️ No Client</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
               </div>
               <button onClick={() => setModal({ type: 'addProject' })} className="bg-purple-600 text-white px-3 py-2 rounded-lg text-xs sm:text-sm font-medium">+ New</button>
             </header>
             <div className="flex-1 overflow-auto p-2 sm:p-4 space-y-3">
               {filtered.map(project => {
                 const client = project.client || getClient(project.client_id);
+                const isOrphaned = !client && project.client_id;
                 const isExp = expanded === project.id;
                 const editorTasks = project.tasks?.filter(t => t.is_editor_task) || [];
                 const clientTasks = project.tasks?.filter(t => t.is_client_task) || [];
@@ -551,7 +556,7 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                       <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${project.status === 'completed' ? 'bg-green-500' : project.status === 'revision' ? 'bg-red-500' : 'bg-yellow-400'}`} />
                       <div className="flex-1 min-w-0">
                         <span className="font-semibold text-sm sm:text-base">{project.name}</span>
-                        <span className="text-gray-500 text-xs ml-2 hidden sm:inline">• {client?.name}</span>
+                        <span className={`text-xs ml-2 hidden sm:inline ${isOrphaned ? 'text-red-500' : 'text-gray-500'}`}>• {client?.name || (isOrphaned ? '⚠️ No Client' : 'No Client')}</span>
                         <p className="text-xs text-gray-400 truncate">{project.services?.join(', ')}</p>
                       </div>
                       <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
@@ -564,7 +569,7 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                     {isExp && (
                       <div className="border-t">
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-3 sm:p-4 bg-gray-50 text-sm">
-                          <div><div className="flex justify-between mb-2"><span className="font-medium text-gray-600">Details</span><button onClick={() => setModal({ type: 'editProject', project })} className="text-purple-600 text-xs">Edit</button></div><p className="text-gray-500">Client: {client?.name}</p><p className="text-gray-500">Due: {new Date(project.due_date).toLocaleDateString()}</p></div>
+                          <div><div className="flex justify-between mb-2"><span className="font-medium text-gray-600">Details</span><button onClick={() => setModal({ type: 'editProject', project })} className="text-purple-600 text-xs">Edit</button></div><p className={isOrphaned ? 'text-red-500' : 'text-gray-500'}>Client: {client?.name || (isOrphaned ? '⚠️ Deleted - Please reassign' : 'None')}</p><p className="text-gray-500">Due: {new Date(project.due_date).toLocaleDateString()}</p></div>
                           <div><div className="flex justify-between mb-2"><span className="font-medium text-gray-600">Revisions</span><button onClick={() => setModal({ type: 'addRevision', project, serviceTypes })} className="text-purple-600 text-xs">+ Add</button></div>{project.revisions?.map(r => <div key={r.id} className="flex items-center gap-1 mb-1"><p className="text-xs flex-1"><span className="text-purple-600">{r.type}:</span> {r.note}</p><button onClick={() => setModal({ type: 'editRevision', project, revision: r, serviceTypes })} className="text-xs hover:bg-gray-200 p-1 rounded">✏️</button></div>)}{!project.revisions?.length && <p className="text-gray-400 text-xs italic">None</p>}</div>
                           <div><div className="flex justify-between mb-2"><span className="font-medium text-gray-600">Client Notes</span><button onClick={() => setModal({ type: 'editNotes', client })} className="text-purple-600 text-xs">Edit</button></div><p className="text-xs text-gray-500">{client?.notes || 'No notes'}</p></div>
                         </div>
@@ -664,7 +669,8 @@ function Database({ clients, setClients, services, setServices, editors, setEdit
       if (type === 'clients') {
         if (isEdit) {
           setClients(prev => prev.map(c => c.id === item.id ? { ...c, ...item } : c));
-          await db.updateClient(item.id, item);
+          const { id, ...updates } = item;
+          await db.updateClient(id, updates);
         } else {
           setClients(prev => [...prev, { ...item, id: tempId }]);
           await db.createNewClient(item);
@@ -673,7 +679,8 @@ function Database({ clients, setClients, services, setServices, editors, setEdit
       } else if (type === 'services') {
         if (isEdit) {
           setServices(prev => prev.map(s => s.id === item.id ? { ...s, ...item } : s));
-          await db.updateService(item.id, item);
+          const { id, ...updates } = item;
+          await db.updateService(id, updates);
         } else {
           setServices(prev => [...prev, { ...item, id: tempId }]);
           await db.createService(item);
@@ -682,7 +689,8 @@ function Database({ clients, setClients, services, setServices, editors, setEdit
       } else if (type === 'editors') {
         if (isEdit) {
           setEditors(prev => prev.map(e => e.id === item.id ? { ...e, ...item } : e));
-          await db.updateEditor(item.id, item);
+          const { id, ...updates } = item;
+          await db.updateEditor(id, updates);
         } else {
           setEditors(prev => [...prev, { ...item, id: tempId }]);
           await db.createEditor(item);
@@ -788,7 +796,7 @@ function EditProjectModal({ project, clients, services, onClose, onSave }) {
     client_id: project.client_id,
     services: project.services || []
   });
-  return <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-auto"><div className="p-4 border-b flex justify-between"><h2 className="text-lg font-bold">Edit Project</h2><button onClick={onClose} className="text-2xl text-gray-400">&times;</button></div><div className="p-4 space-y-4"><div><label className="block text-sm font-medium mb-1">Name</label><input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div><div><label className="block text-sm font-medium mb-1">Due Date</label><input type="date" value={form.due_date} onChange={e => setForm({ ...form, due_date: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div><div><label className="block text-sm font-medium mb-1">Client</label><select value={form.client_id} onChange={e => setForm({ ...form, client_id: e.target.value })} className="w-full border rounded-lg px-3 py-2">{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div><div><label className="block text-sm font-medium mb-2">Services</label><div className="grid grid-cols-2 gap-2 max-h-40 overflow-auto">{services.map(s => <label key={s.id} className={`flex items-center gap-2 p-2 rounded-lg border-2 cursor-pointer text-sm ${form.services.includes(s.name) ? 'border-purple-400 bg-purple-50' : 'border-gray-200'}`}><input type="checkbox" checked={form.services.includes(s.name)} onChange={e => setForm({ ...form, services: e.target.checked ? [...form.services, s.name] : form.services.filter(x => x !== s.name) })} className="w-4 h-4" /><span>{s.name}</span></label>)}</div><p className="text-xs text-gray-400 mt-1">Note: Changing services won't add/remove tasks</p></div><button onClick={() => onSave(form)} className="w-full bg-purple-600 text-white py-3 rounded-lg font-medium">Save</button></div></div></div>;
+  return <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-auto"><div className="p-4 border-b flex justify-between"><h2 className="text-lg font-bold">Edit Project</h2><button onClick={onClose} className="text-2xl text-gray-400">&times;</button></div><div className="p-4 space-y-4"><div><label className="block text-sm font-medium mb-1">Name</label><input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div><div><label className="block text-sm font-medium mb-1">Due Date</label><input type="date" value={form.due_date} onChange={e => setForm({ ...form, due_date: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div><div><label className="block text-sm font-medium mb-1">Client</label><select value={form.client_id || ''} onChange={e => setForm({ ...form, client_id: e.target.value || null })} className={`w-full border rounded-lg px-3 py-2 ${!form.client_id ? 'border-red-300 bg-red-50' : ''}`}><option value="">Select client...</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>{!form.client_id && <p className="text-xs text-red-500 mt-1">⚠️ Please assign a client</p>}</div><div><label className="block text-sm font-medium mb-2">Services</label><div className="grid grid-cols-2 gap-2 max-h-40 overflow-auto">{services.map(s => <label key={s.id} className={`flex items-center gap-2 p-2 rounded-lg border-2 cursor-pointer text-sm ${form.services.includes(s.name) ? 'border-purple-400 bg-purple-50' : 'border-gray-200'}`}><input type="checkbox" checked={form.services.includes(s.name)} onChange={e => setForm({ ...form, services: e.target.checked ? [...form.services, s.name] : form.services.filter(x => x !== s.name) })} className="w-4 h-4" /><span>{s.name}</span></label>)}</div><p className="text-xs text-gray-400 mt-1">Note: Changing services won't add/remove tasks</p></div><button onClick={() => onSave(form)} className="w-full bg-purple-600 text-white py-3 rounded-lg font-medium">Save</button></div></div></div>;
 }
 
 function AddRevisionModal({ serviceTypes, onClose, onSave }) {
