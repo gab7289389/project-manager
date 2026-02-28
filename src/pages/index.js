@@ -275,13 +275,18 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
 
   const sendToClient = async (project, taskIds, client) => {
     const fileNames = project.tasks.filter(t => taskIds.includes(t.id)).map(t => t.text.replace('Submit ', '').replace(' to client', ''));
+    
+    // Gather all emails (primary + additional)
+    const allEmails = [client.email, ...(client.additional_emails || [])].filter(Boolean);
+    
     try {
       setSaving(true);
       
-      // Validate email before attempting to send
+      // Validate all emails
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(client.email)) {
-        throw new Error(`Invalid email format: ${client.email}`);
+      const invalidEmails = allEmails.filter(e => !emailRegex.test(e));
+      if (invalidEmails.length > 0) {
+        throw new Error(`Invalid email format: ${invalidEmails.join(', ')}`);
       }
       
       // Get ALL client task IDs (sent + being sent now + pending) for the magic link
@@ -300,7 +305,7 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       const res = await fetch('/api/send-email', { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
-        body: JSON.stringify({ to: client.email, projectName: project.name, clientName: client.name, magicLinkToken: magicLink.token, files, pendingFiles, previouslySentFiles }) 
+        body: JSON.stringify({ to: allEmails, projectName: project.name, clientName: client.name, magicLinkToken: magicLink.token, files, pendingFiles, previouslySentFiles }) 
       });
       
       const resData = await res.json();
@@ -337,7 +342,7 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       console.error('Send to client error:', e); 
       alert('❌ Failed to send: ' + e.message);
       // Send failure notification immediately - we know it failed
-      fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'files_sent', data: { success: false, projectName: project.name, clientName: client.name, clientEmail: client.email, files: fileNames, error: e.message } }) }).catch(console.error);
+      fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'files_sent', data: { success: false, projectName: project.name, clientName: client.name, clientEmail: allEmails.join(', '), files: fileNames, error: e.message } }) }).catch(console.error);
       return false; 
     }
     finally { setSaving(false); }
@@ -347,6 +352,10 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
   const resendToClient = async (project, client) => {
     const sentTasks = project.tasks.filter(t => t.is_client_task && t.sent && t.file_url);
     const fileNames = sentTasks.map(t => t.text.replace('Submit ', '').replace(' to client', ''));
+    
+    // Gather all emails (primary + additional)
+    const allEmails = [client.email, ...(client.additional_emails || [])].filter(Boolean);
+    
     try {
       setSaving(true);
       if (sentTasks.length === 0) {
@@ -354,10 +363,11 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
         return false;
       }
       
-      // Validate email
+      // Validate all emails
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(client.email)) {
-        throw new Error(`Invalid email format: ${client.email}`);
+      const invalidEmails = allEmails.filter(e => !emailRegex.test(e));
+      if (invalidEmails.length > 0) {
+        throw new Error(`Invalid email format: ${invalidEmails.join(', ')}`);
       }
       
       const sentTaskIds = sentTasks.map(t => t.id);
@@ -367,7 +377,7 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       const files = sentTasks.map(t => ({ type: t.text.replace('Submit ', '').replace(' to client', ''), name: t.file_name }));
       const pendingFiles = project.tasks.filter(t => t.is_client_task && !t.file_url).map(t => ({ type: t.text.replace('Submit ', '').replace(' to client', '') }));
       
-      const res = await fetch('/api/send-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: client.email, projectName: project.name, clientName: client.name, magicLinkToken: magicLink.token, files, pendingFiles, previouslySentFiles: [], isResend: true }) });
+      const res = await fetch('/api/send-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: allEmails, projectName: project.name, clientName: client.name, magicLinkToken: magicLink.token, files, pendingFiles, previouslySentFiles: [], isResend: true }) });
       
       const resData = await res.json();
       
@@ -382,7 +392,7 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     } catch (e) { 
       console.error('Resend error:', e); 
       alert('❌ Failed to resend: ' + e.message);
-      fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'files_sent', data: { success: false, projectName: project.name + ' (RESEND)', clientName: client.name, clientEmail: client.email, files: fileNames, error: e.message } }) }).catch(console.error);
+      fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'files_sent', data: { success: false, projectName: project.name + ' (RESEND)', clientName: client.name, clientEmail: allEmails.join(', '), files: fileNames, error: e.message } }) }).catch(console.error);
       return false; 
     }
     finally { setSaving(false); }
@@ -718,23 +728,40 @@ function Database({ clients, setClients, services, setServices, editors, setEdit
 }
 
 function DatabaseModal({ tab, item, onClose, onSave }) {
-  const [form, setForm] = useState(item || { name: '', email: '', notes: '', tasks: [] });
+  const [form, setForm] = useState(item || { name: '', email: '', notes: '', tasks: [], additional_emails: [] });
+  const [additionalEmailInput, setAdditionalEmailInput] = useState('');
+  
+  const addAdditionalEmail = () => {
+    const email = additionalEmailInput.trim();
+    if (!email) return;
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) { alert('Invalid email format'); return; }
+    if (form.additional_emails?.includes(email) || email === form.email) { alert('Email already added'); return; }
+    setForm({ ...form, additional_emails: [...(form.additional_emails || []), email] });
+    setAdditionalEmailInput('');
+  };
+  
+  const removeAdditionalEmail = (email) => {
+    setForm({ ...form, additional_emails: form.additional_emails.filter(e => e !== email) });
+  };
+  
   const save = () => {
     if (!form.name?.trim()) { alert('Name required'); return; }
     if (tab !== 'services' && !form.email?.trim()) { alert('Email required'); return; }
     const tasks = typeof form.tasks === 'string' ? form.tasks.split(',').map(t => t.trim()).filter(Boolean) : form.tasks;
     
-    // Build save object based on tab type - don't include email for services
+    // Build save object based on tab type
     if (tab === 'services') {
       onSave({ name: form.name, tasks });
     } else if (tab === 'editors') {
       onSave({ name: form.name, email: form.email, avatar: item?.avatar || '👤' });
     } else {
-      onSave({ name: form.name, email: form.email, notes: form.notes });
+      // Clients - include additional_emails
+      onSave({ name: form.name, email: form.email, notes: form.notes, additional_emails: form.additional_emails || [] });
     }
   };
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-auto"><div className="p-4 border-b flex justify-between"><h2 className="text-lg font-bold">{item ? 'Edit' : 'Add'} {tab.slice(0,-1)}</h2><button onClick={onClose} className="text-2xl text-gray-400">&times;</button></div><div className="p-4 space-y-4"><div><label className="block text-sm font-medium mb-1">Name *</label><input value={form.name || ''} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div>{tab !== 'services' && <div><label className="block text-sm font-medium mb-1">Email *</label><input value={form.email || ''} onChange={e => setForm({ ...form, email: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div>}{tab === 'clients' && <div><label className="block text-sm font-medium mb-1">Notes</label><textarea value={form.notes || ''} onChange={e => setForm({ ...form, notes: e.target.value })} className="w-full border rounded-lg px-3 py-2" rows={2} /></div>}{tab === 'services' && <div><label className="block text-sm font-medium mb-1">Tasks * (comma separated)</label><textarea value={Array.isArray(form.tasks) ? form.tasks.join(', ') : form.tasks || ''} onChange={e => setForm({ ...form, tasks: e.target.value })} className="w-full border rounded-lg px-3 py-2" rows={3} /></div>}<button onClick={save} className="w-full bg-purple-600 text-white py-2 rounded-lg font-medium">Save</button></div></div></div>
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-auto"><div className="p-4 border-b flex justify-between"><h2 className="text-lg font-bold">{item ? 'Edit' : 'Add'} {tab.slice(0,-1)}</h2><button onClick={onClose} className="text-2xl text-gray-400">&times;</button></div><div className="p-4 space-y-4"><div><label className="block text-sm font-medium mb-1">Name *</label><input value={form.name || ''} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div>{tab !== 'services' && <div><label className="block text-sm font-medium mb-1">Email *</label><input value={form.email || ''} onChange={e => setForm({ ...form, email: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div>}{tab === 'clients' && <div><label className="block text-sm font-medium mb-1">Additional Emails</label><div className="flex gap-2 mb-2"><input value={additionalEmailInput} onChange={e => setAdditionalEmailInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addAdditionalEmail())} placeholder="marketing@company.com" className="flex-1 border rounded-lg px-3 py-2 text-sm" /><button type="button" onClick={addAdditionalEmail} className="px-3 py-2 bg-gray-100 rounded-lg text-sm hover:bg-gray-200">+ Add</button></div>{form.additional_emails?.length > 0 && <div className="flex flex-wrap gap-2">{form.additional_emails.map(email => <span key={email} className="inline-flex items-center gap-1 bg-purple-100 text-purple-700 px-2 py-1 rounded-full text-xs">{email}<button type="button" onClick={() => removeAdditionalEmail(email)} className="text-purple-500 hover:text-purple-700">&times;</button></span>)}</div>}</div>}{tab === 'clients' && <div><label className="block text-sm font-medium mb-1">Notes</label><textarea value={form.notes || ''} onChange={e => setForm({ ...form, notes: e.target.value })} className="w-full border rounded-lg px-3 py-2" rows={2} /></div>}{tab === 'services' && <div><label className="block text-sm font-medium mb-1">Tasks * (comma separated)</label><textarea value={Array.isArray(form.tasks) ? form.tasks.join(', ') : form.tasks || ''} onChange={e => setForm({ ...form, tasks: e.target.value })} className="w-full border rounded-lg px-3 py-2" rows={3} /></div>}<button onClick={save} className="w-full bg-purple-600 text-white py-2 rounded-lg font-medium">Save</button></div></div></div>
   );
 }
 
@@ -793,5 +820,6 @@ function SendToClientModal({ project, tasks, client, onClose, onSend }) {
   const ids = tasks.filter(t => selected[t.id]).map(t => t.id);
   const send = async () => { setSending(true); await onSend(ids); setSending(false); setSent(true); };
   if (sent) return <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-2xl max-w-md w-full p-8 text-center"><p className="text-6xl mb-4">✅</p><p className="text-xl font-bold text-green-700">Email Sent!</p><p className="text-gray-500">Magic link sent to {client?.email}</p><button onClick={onClose} className="mt-4 bg-purple-600 text-white px-6 py-2 rounded-lg">Done</button></div></div>;
-  return <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-2xl max-w-lg w-full"><div className="p-4 border-b bg-green-50"><h2 className="text-lg font-bold text-green-700">📤 Send to Client</h2></div><div className="p-4 space-y-4"><div className="bg-gray-50 rounded-lg p-3 text-sm"><p><strong>Project:</strong> {project.name}</p><p><strong>To:</strong> {client?.email}</p></div><div className="space-y-2 max-h-48 overflow-auto">{tasks.map(t => <label key={t.id} className={`flex items-center gap-3 p-3 rounded-lg border-2 cursor-pointer ${selected[t.id] ? 'border-green-400 bg-green-50' : 'border-gray-200'}`}><input type="checkbox" checked={selected[t.id]} onChange={() => setSelected({ ...selected, [t.id]: !selected[t.id] })} className="w-4 h-4" /><div><p className="font-medium text-sm">{t.text.replace('Submit ', '').replace(' to client', '')}</p><p className="text-xs text-gray-500">📎 {t.file_name}</p></div></label>)}</div><div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800">📧 Real email will be sent with download link</div><div className="flex gap-3"><button onClick={onClose} className="flex-1 border py-2 rounded-lg">Cancel</button><button onClick={send} disabled={!ids.length || sending} className="flex-1 bg-green-600 text-white py-2 rounded-lg disabled:opacity-50">{sending ? '⏳ Sending...' : `Send ${ids.length} File${ids.length > 1 ? 's' : ''}`}</button></div></div></div></div>;
+  const allEmails = [client?.email, ...(client?.additional_emails || [])].filter(Boolean);
+  return <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-2xl max-w-lg w-full"><div className="p-4 border-b bg-green-50"><h2 className="text-lg font-bold text-green-700">📤 Send to Client</h2></div><div className="p-4 space-y-4"><div className="bg-gray-50 rounded-lg p-3 text-sm"><p><strong>Project:</strong> {project.name}</p><p><strong>To:</strong> {client?.email}{client?.additional_emails?.length > 0 && <span className="text-gray-500"> + {client.additional_emails.length} more</span>}</p>{client?.additional_emails?.length > 0 && <div className="mt-1 flex flex-wrap gap-1">{client.additional_emails.map(e => <span key={e} className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">{e}</span>)}</div>}</div><div className="space-y-2 max-h-48 overflow-auto">{tasks.map(t => <label key={t.id} className={`flex items-center gap-3 p-3 rounded-lg border-2 cursor-pointer ${selected[t.id] ? 'border-green-400 bg-green-50' : 'border-gray-200'}`}><input type="checkbox" checked={selected[t.id]} onChange={() => setSelected({ ...selected, [t.id]: !selected[t.id] })} className="w-4 h-4" /><div><p className="font-medium text-sm">{t.text.replace('Submit ', '').replace(' to client', '')}</p><p className="text-xs text-gray-500">📎 {t.file_name}</p></div></label>)}</div><div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800">📧 Email will be sent to {allEmails.length} recipient{allEmails.length > 1 ? 's' : ''}</div><div className="flex gap-3"><button onClick={onClose} className="flex-1 border py-2 rounded-lg">Cancel</button><button onClick={send} disabled={!ids.length || sending} className="flex-1 bg-green-600 text-white py-2 rounded-lg disabled:opacity-50">{sending ? '⏳ Sending...' : `Send ${ids.length} File${ids.length > 1 ? 's' : ''}`}</button></div></div></div></div>;
 }
