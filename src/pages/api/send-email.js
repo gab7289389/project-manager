@@ -10,8 +10,11 @@ export default async function handler(req, res) {
   try {
     const { to, projectName, clientName, magicLinkToken, files, pendingFiles, previouslySentFiles, isResend: isResendEmail } = req.body;
 
+    // Handle both single email (string) and multiple emails (array)
+    const recipients = Array.isArray(to) ? to : [to];
+    
     // Validate required fields
-    if (!to || !projectName || !magicLinkToken) {
+    if (!recipients.length || !projectName || !magicLinkToken) {
       return res.status(400).json({ 
         error: 'Missing required fields',
         errorType: 'validation',
@@ -19,24 +22,28 @@ export default async function handler(req, res) {
       });
     }
 
-    // Basic email validation
+    // Basic email validation for all recipients
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(to)) {
+    const invalidEmails = recipients.filter(email => !emailRegex.test(email));
+    if (invalidEmails.length > 0) {
       return res.status(400).json({ 
         error: 'Invalid email format',
         errorType: 'invalid_email',
-        details: `The email "${to}" appears to be invalid`
+        details: `Invalid email(s): ${invalidEmails.join(', ')}`
       });
     }
 
     // Check for obviously fake/test domains
     const fakeDomains = ['test.com', 'example.com', 'fake.com', 'asdf.com', 'asd.com'];
-    const emailDomain = to.split('@')[1]?.toLowerCase();
-    if (fakeDomains.includes(emailDomain)) {
+    const suspiciousEmails = recipients.filter(email => {
+      const domain = email.split('@')[1]?.toLowerCase();
+      return fakeDomains.includes(domain);
+    });
+    if (suspiciousEmails.length > 0) {
       return res.status(400).json({
         error: 'Suspicious email domain',
         errorType: 'suspicious_email',
-        details: `The domain "${emailDomain}" looks like a test/fake domain`
+        details: `Suspicious email(s): ${suspiciousEmails.join(', ')}`
       });
     }
 
@@ -62,7 +69,7 @@ export default async function handler(req, res) {
     const { data, error } = await resend.emails.send({
       from: 'DXTR Notifications <notif@send.dxtr.au>',
       replyTo: ['contact@dxtr.au'],
-      to: [to],
+      to: recipients,
       subject,
       html: `
         <!DOCTYPE html>
@@ -150,86 +157,56 @@ Questions? Please don't reply to this email. Instead, contact us at contact@dxtr
     if (error) {
       console.error('Resend API error:', error);
       
-      // Parse specific Resend error types
       let errorType = 'api_error';
       let errorDetails = error.message || 'Unknown error';
-      const errorName = error.name || '';
       const errorMsg = (error.message || '').toLowerCase();
       
-      // Rate limiting
       if (errorMsg.includes('rate limit') || errorMsg.includes('too many') || error.statusCode === 429) {
         errorType = 'rate_limit';
-        errorDetails = 'Email rate limit exceeded. Please wait a few minutes before sending more emails.';
-      }
-      // Validation errors
-      else if (errorMsg.includes('validation') || errorMsg.includes('invalid email')) {
+        errorDetails = 'Email rate limit exceeded. Wait a few minutes.';
+      } else if (errorMsg.includes('validation') || errorMsg.includes('invalid email')) {
         errorType = 'invalid_email';
         errorDetails = 'The email address is invalid or does not exist.';
-      }
-      // Domain/sender issues
-      else if (errorMsg.includes('not verified') || errorMsg.includes('domain') || errorMsg.includes('sender')) {
+      } else if (errorMsg.includes('not verified') || errorMsg.includes('domain') || errorMsg.includes('sender')) {
         errorType = 'domain_error';
-        errorDetails = 'Email sender domain is not properly verified. Contact admin.';
-      }
-      // API key issues
-      else if (errorMsg.includes('api key') || errorMsg.includes('unauthorized') || errorMsg.includes('authentication') || error.statusCode === 401) {
+        errorDetails = 'Email sender domain not verified. Contact admin.';
+      } else if (errorMsg.includes('api key') || errorMsg.includes('unauthorized') || error.statusCode === 401) {
         errorType = 'auth_error';
-        errorDetails = 'Email service authentication failed. API key may be invalid or expired.';
-      }
-      // Account issues (quota, suspended, etc)
-      else if (errorMsg.includes('quota') || errorMsg.includes('limit exceeded') || errorMsg.includes('account')) {
+        errorDetails = 'Email service auth failed. API key invalid/expired.';
+      } else if (errorMsg.includes('quota') || errorMsg.includes('limit exceeded') || errorMsg.includes('account')) {
         errorType = 'account_limit';
-        errorDetails = 'Email account limit reached or account issue. Check your Resend dashboard.';
-      }
-      // Payment/billing issues
-      else if (errorMsg.includes('payment') || errorMsg.includes('billing') || errorMsg.includes('subscription') || error.statusCode === 402) {
+        errorDetails = 'Email account limit reached. Check Resend dashboard.';
+      } else if (errorMsg.includes('payment') || errorMsg.includes('billing') || error.statusCode === 402) {
         errorType = 'billing_error';
-        errorDetails = 'Email service billing issue. Check your Resend account payment status.';
-      }
-      // Forbidden (blocked, suspended)
-      else if (error.statusCode === 403) {
+        errorDetails = 'Email service billing issue. Check payment status.';
+      } else if (error.statusCode === 403) {
         errorType = 'account_suspended';
-        errorDetails = 'Email sending is blocked. Your Resend account may be suspended.';
-      }
-      // Service unavailable
-      else if (error.statusCode === 503 || error.statusCode === 502) {
+        errorDetails = 'Email sending blocked. Account may be suspended.';
+      } else if (error.statusCode === 503 || error.statusCode === 502) {
         errorType = 'service_unavailable';
-        errorDetails = 'Email service is temporarily unavailable. Please try again in a few minutes.';
+        errorDetails = 'Email service temporarily unavailable. Try again.';
       }
       
-      return res.status(500).json({ 
-        error: errorDetails,
-        errorType,
-        originalError: error.message,
-        statusCode: error.statusCode
-      });
+      return res.status(500).json({ error: errorDetails, errorType, originalError: error.message });
     }
 
     return res.status(200).json({ success: true, emailId: data.id });
   } catch (error) {
     console.error('Email send error:', error);
     
-    // Handle network/connection errors
     let errorType = 'unknown';
     let errorDetails = 'Failed to send email';
     
     if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
       errorType = 'network_error';
-      errorDetails = 'Could not connect to email service. Check internet connection.';
-    } else if (error.code === 'ETIMEDOUT' || error.code === 'ESOCKETTIMEDOUT') {
+      errorDetails = 'Could not connect to email service.';
+    } else if (error.code === 'ETIMEDOUT') {
       errorType = 'timeout';
-      errorDetails = 'Email service timed out. Please try again.';
-    } else if (error.code === 'ECONNRESET') {
-      errorType = 'connection_reset';
-      errorDetails = 'Connection to email service was reset. Please try again.';
+      errorDetails = 'Email service timed out. Try again.';
     } else if (error.message) {
       errorDetails = error.message;
     }
     
-    return res.status(500).json({ 
-      error: errorDetails,
-      errorType,
-      originalError: error.message
-    });
+    return res.status(500).json({ error: errorDetails, errorType, originalError: error.message });
   }
 }
