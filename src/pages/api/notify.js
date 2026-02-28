@@ -3,7 +3,7 @@ import { Resend } from 'resend';
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 // Your notification email addresses
-const NOTIFY_EMAILS = ['contact@dxtr.au']; // Add co-owner email here too
+const NOTIFY_EMAILS = ['contact@dxtr.au'];
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -64,23 +64,6 @@ export default async function handler(req, res) {
             ${data.revisionNote ? `<p><strong>Note:</strong> ${data.revisionNote}</p>` : ''}
             <p style="color: #6b7280; font-size: 12px; margin-top: 20px;">
               Updated at ${new Date().toLocaleString('en-AU', { timeZone: 'Australia/Perth' })}
-            </p>
-          </div>
-        `;
-        break;
-
-      case 'email_bounced':
-        subject = `🚨 EMAIL BOUNCED: ${data.clientEmail}`;
-        html = `
-          <div style="font-family: sans-serif; max-width: 600px;">
-            <h2 style="color: #ef4444;">🚨 Email Delivery Failed</h2>
-            <p><strong>Project:</strong> ${data.projectName}</p>
-            <p><strong>Client:</strong> ${data.clientName}</p>
-            <p><strong>Email:</strong> ${data.clientEmail}</p>
-            <p><strong>Reason:</strong> ${data.reason || 'Bounced or rejected'}</p>
-            <p style="color: #ef4444; font-weight: bold;">Please contact the client directly.</p>
-            <p style="color: #6b7280; font-size: 12px; margin-top: 20px;">
-              Failed at ${new Date().toLocaleString('en-AU', { timeZone: 'Australia/Perth' })}
             </p>
           </div>
         `;
