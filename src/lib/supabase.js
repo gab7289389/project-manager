@@ -1,17 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Missing Supabase environment variables');
-}
-
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
-
-// =============================================
-// DATABASE FUNCTIONS
-// =============================================
+export const supabase = createClient(supabaseUrl, supabaseKey);
 
 // CLIENTS
 export const getClients = async () => {
@@ -89,33 +81,16 @@ export const deleteEditor = async (id) => {
 export const getProjects = async () => {
   const { data, error } = await supabase
     .from('projects')
-    .select(`
-      *,
-      client:clients(*),
-      tasks(*),
-      revisions(*)
-    `)
-    .order('due_date');
+    .select(`*, tasks(*), revisions(*), client:clients(*)`)
+    .order('created_at', { ascending: false });
   if (error) throw error;
   return data;
 };
 
-export const createProject = async (project, tasks) => {
-  const { data: projectData, error: projectError } = await supabase
-    .from('projects')
-    .insert(project)
-    .select()
-    .single();
-  
-  if (projectError) throw projectError;
-  
-  if (tasks.length > 0) {
-    const tasksWithProjectId = tasks.map(t => ({ ...t, project_id: projectData.id }));
-    const { error: tasksError } = await supabase.from('tasks').insert(tasksWithProjectId);
-    if (tasksError) throw tasksError;
-  }
-  
-  return projectData;
+export const createProject = async (project) => {
+  const { data, error } = await supabase.from('projects').insert(project).select().single();
+  if (error) throw error;
+  return data;
 };
 
 export const updateProject = async (id, updates) => {
@@ -136,141 +111,111 @@ export const updateTask = async (id, updates) => {
   return data;
 };
 
-// REVISIONS
-export const createRevision = async (revision, tasks) => {
-  const { data: revisionData, error: revisionError } = await supabase
-    .from('revisions')
-    .insert(revision)
-    .select()
-    .single();
-  
-  if (revisionError) throw revisionError;
-  
-  let createdTasks = [];
-  if (tasks.length > 0) {
-    const tasksWithIds = tasks.map(t => ({ ...t, revision_id: revisionData.id }));
-    const { data: tasksData, error: tasksError } = await supabase
-      .from('tasks')
-      .insert(tasksWithIds)
-      .select();
-    if (tasksError) throw tasksError;
-    createdTasks = tasksData || [];
-  }
-  
-  return { revision: revisionData, tasks: createdTasks };
+export const createTask = async (task) => {
+  const { data, error } = await supabase.from('tasks').insert(task).select().single();
+  if (error) throw error;
+  return data;
 };
 
-export const updateRevision = async (id, updates) => {
-  const { data, error } = await supabase.from('revisions').update(updates).eq('id', id).select().single();
+export const createTasks = async (tasks) => {
+  const { data, error } = await supabase.from('tasks').insert(tasks).select();
+  if (error) throw error;
+  return data;
+};
+
+export const deleteTask = async (id) => {
+  const { error } = await supabase.from('tasks').delete().eq('id', id);
+  if (error) throw error;
+};
+
+// REVISIONS
+export const createRevision = async (revision) => {
+  const { data, error } = await supabase.from('revisions').insert(revision).select().single();
   if (error) throw error;
   return data;
 };
 
 export const deleteRevision = async (id) => {
-  const { error: tasksError } = await supabase.from('tasks').delete().eq('revision_id', id);
-  if (tasksError) throw tasksError;
-  
   const { error } = await supabase.from('revisions').delete().eq('id', id);
   if (error) throw error;
 };
 
 // MAGIC LINKS
 export const createMagicLink = async (projectId, clientId, taskIds, pendingTaskIds = []) => {
-  const { data, error } = await supabase
-    .from('magic_links')
-    .insert({
-      project_id: projectId,
-      client_id: clientId,
-      task_ids: taskIds,
-      pending_task_ids: pendingTaskIds
-    })
-    .select()
-    .single();
+  const token = Math.random().toString(36).substring(2) + Date.now().toString(36);
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  
+  const { data, error } = await supabase.from('magic_links').insert({
+    token,
+    project_id: projectId,
+    client_id: clientId,
+    task_ids: taskIds,
+    pending_task_ids: pendingTaskIds,
+    expires_at: expiresAt.toISOString()
+  }).select().single();
   
   if (error) throw error;
   return data;
 };
 
-export const getMagicLink = async (token) => {
-  console.log('Calling validate_magic_link with token:', token);
-  const { data, error } = await supabase.rpc('validate_magic_link', { link_token: token });
-  console.log('validate_magic_link response:', { data, error });
-  if (error) {
-    console.error('validate_magic_link error:', error);
-    throw error;
-  }
+export const validateMagicLink = async (token) => {
+  const { data, error } = await supabase.rpc('validate_magic_link', { token_input: token });
+  if (error) throw error;
   return data?.[0];
 };
 
-export const markMagicLinkAccessed = async (token) => {
-  const { error } = await supabase
-    .from('magic_links')
-    .update({ accessed_at: new Date().toISOString() })
-    .eq('token', token);
-  if (error) throw error;
-};
-
-// FILE STORAGE with progress and speed tracking
-export const uploadFile = async (projectId, file, onProgress) => {
-  const fileName = `${projectId}/${Date.now()}-${file.name}`;
-  
+// FILE UPLOAD - Uses Bunny CDN if configured, otherwise Supabase Storage
+export const uploadFile = async (file, folder = 'uploads', onProgress = null) => {
   return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    const startTime = Date.now();
-    let lastLoaded = 0;
-    let lastTime = startTime;
-    let currentSpeed = 0;
+    const reader = new FileReader();
     
-    xhr.upload.addEventListener('progress', (e) => {
-      if (e.lengthComputable && onProgress) {
-        const percent = Math.round((e.loaded / e.total) * 100);
-        const now = Date.now();
-        const timeDiff = (now - lastTime) / 1000;
+    reader.onload = async () => {
+      try {
+        const base64Data = reader.result;
+        const fileName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
         
-        if (timeDiff >= 0.2) {
-          const bytesDiff = e.loaded - lastLoaded;
-          currentSpeed = bytesDiff / timeDiff;
-          lastLoaded = e.loaded;
-          lastTime = now;
+        // Use Bunny CDN upload API
+        const response = await fetch('/api/bunny-upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fileName,
+            fileData: base64Data,
+            folder
+          })
+        });
+        
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || 'Upload failed');
         }
         
-        const remaining = e.total - e.loaded;
-        const eta = currentSpeed > 0 ? remaining / currentSpeed : 0;
+        const result = await response.json();
+        resolve({ url: result.url, fileName: result.fileName });
         
-        onProgress(percent, currentSpeed, eta);
+      } catch (error) {
+        reject(error);
       }
-    });
+    };
     
-    xhr.addEventListener('load', async () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        const { data: urlData } = supabase.storage
-          .from('project-files')
-          .getPublicUrl(fileName);
-        
-        resolve({
-          fileName: file.name,
-          fileUrl: urlData.publicUrl
-        });
-      } else {
-        reject(new Error(`Upload failed: ${xhr.status}`));
-      }
-    });
-    
-    xhr.addEventListener('error', () => reject(new Error('Upload failed')));
-    xhr.addEventListener('abort', () => reject(new Error('Upload aborted')));
-    
-    const url = `${supabaseUrl}/storage/v1/object/project-files/${fileName}`;
-    xhr.open('POST', url);
-    xhr.setRequestHeader('Authorization', `Bearer ${supabaseAnonKey}`);
-    xhr.setRequestHeader('x-upsert', 'false');
-    xhr.send(file);
+    reader.onerror = () => reject(new Error('Failed to read file'));
+    reader.readAsDataURL(file);
   });
 };
 
+// Delete file from storage
 export const deleteFile = async (fileUrl) => {
-  const path = fileUrl.split('/project-files/')[1];
-  if (path) {
-    const { error } = await supabase.storage.from('project-files').remove([path]);
-    if (error) throw error;
+  try {
+    const response = await fetch('/api/bunny-delete', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath: fileUrl })
+    });
+    
+    if (!response.ok) {
+      console.error('Failed to delete file:', fileUrl);
+    }
+  } catch (error) {
+    console.error('Delete file error:', error);
   }
 };
