@@ -1,13 +1,16 @@
-// Stream upload to Bunny CDN - handles large files
+// Edge function for large file uploads to Bunny CDN
+// Edge functions have better streaming support than serverless
+
 export const config = {
-  api: {
-    bodyParser: false, // Disable body parsing to handle raw stream
-  },
+  runtime: 'edge',
 };
 
-export default async function handler(req, res) {
+export default async function handler(req) {
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), { 
+      status: 405,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 
   const BUNNY_STORAGE_ZONE = process.env.BUNNY_STORAGE_ZONE || 'dxtr-staging';
@@ -15,51 +18,60 @@ export default async function handler(req, res) {
   const BUNNY_HOSTNAME = 'syd.storage.bunnycdn.com';
 
   if (!BUNNY_API_KEY) {
-    return res.status(500).json({ error: 'Bunny CDN not configured' });
+    return new Response(JSON.stringify({ error: 'Bunny CDN not configured' }), { 
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 
   try {
-    const fileName = decodeURIComponent(req.headers['x-file-name'] || '');
+    const fileName = decodeURIComponent(req.headers.get('x-file-name') || '');
     
     if (!fileName) {
-      return res.status(400).json({ error: 'Missing file name' });
+      return new Response(JSON.stringify({ error: 'Missing file name' }), { 
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
 
     const bunnyUrl = `https://${BUNNY_HOSTNAME}/${BUNNY_STORAGE_ZONE}/uploads/${fileName}`;
 
-    // Collect the request body chunks
-    const chunks = [];
-    for await (const chunk of req) {
-      chunks.push(chunk);
-    }
-    const fileBuffer = Buffer.concat(chunks);
-
-    // Upload to Bunny CDN
+    // Stream the request body directly to Bunny
     const response = await fetch(bunnyUrl, {
       method: 'PUT',
       headers: {
         'AccessKey': BUNNY_API_KEY,
-        'Content-Type': 'application/octet-stream',
+        'Content-Type': req.headers.get('content-type') || 'application/octet-stream',
       },
-      body: fileBuffer,
+      body: req.body,
+      duplex: 'half',
     });
 
     if (!response.ok) {
       const errorText = await response.text();
       console.error('Bunny upload error:', response.status, errorText);
-      return res.status(500).json({ error: `Upload failed: ${response.status}` });
+      return new Response(JSON.stringify({ error: `Upload failed: ${response.status}` }), { 
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
 
     const publicUrl = `https://${BUNNY_STORAGE_ZONE}.b-cdn.net/uploads/${fileName}`;
 
-    return res.status(200).json({ 
+    return new Response(JSON.stringify({ 
       success: true, 
       url: publicUrl,
       fileName: fileName.split('/').pop()
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
     });
 
   } catch (error) {
     console.error('Upload error:', error);
-    return res.status(500).json({ error: error.message || 'Upload failed' });
+    return new Response(JSON.stringify({ error: error.message || 'Upload failed' }), { 
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 }
