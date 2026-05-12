@@ -317,17 +317,19 @@ function LoginScreen({ onLogin }) {
     }
   };
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-700 to-purple-900 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
-        <div className="text-center mb-8">
-          <div className="w-16 h-16 bg-purple-100 rounded-2xl flex items-center justify-center mx-auto mb-4"><span className="text-3xl">🔐</span></div>
-          <h1 className="text-2xl font-bold text-gray-800">Project Manager</h1>
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-xl border border-gray-200 p-10 w-full max-w-md">
+        <div className="text-center mb-10">
+          <div className="w-16 h-16 bg-black rounded-2xl flex items-center justify-center mx-auto mb-5">
+            <span className="text-white font-bold text-2xl">D</span>
+          </div>
+          <h1 className="text-2xl font-bold text-gray-900">DXTR Admin</h1>
           <p className="text-gray-500 mt-2">Enter password to continue</p>
         </div>
         <form onSubmit={handleSubmit}>
-          <input type="password" value={password} onChange={(e) => { setPassword(e.target.value); setError(''); }} placeholder="Enter password" className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:border-purple-500 focus:outline-none text-lg" autoFocus />
+          <input type="password" value={password} onChange={(e) => { setPassword(e.target.value); setError(''); }} placeholder="Enter password" className="w-full px-4 py-3.5 border border-gray-200 rounded-xl focus:border-black focus:ring-1 focus:ring-black focus:outline-none text-lg" autoFocus />
           {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
-          <button type="submit" className="w-full mt-4 bg-purple-600 text-white py-3 rounded-xl font-semibold hover:bg-purple-700 transition">Login</button>
+          <button type="submit" className="w-full mt-5 bg-black text-white py-3.5 rounded-xl font-semibold hover:bg-gray-800 transition-colors">Login</button>
         </form>
       </div>
     </div>
@@ -419,22 +421,25 @@ export default function App() {
 
   const handleLogout = () => { localStorage.removeItem('pm_authenticated'); setIsAuthenticated(false); };
 
-  if (!authChecked) return <div className="h-screen flex items-center justify-center bg-gray-100"><div className="animate-spin text-4xl">⏳</div></div>;
+  if (!authChecked) return <div className="h-screen flex items-center justify-center bg-gray-50"><div className="animate-spin text-4xl">⏳</div></div>;
   if (!isAuthenticated) return <LoginScreen onLogin={() => setIsAuthenticated(true)} />;
-  if (loading) return <div className="h-screen flex items-center justify-center bg-gray-100"><div className="text-center"><div className="animate-spin text-4xl mb-4">⏳</div><p className="text-gray-500">Loading...</p></div></div>;
+  if (loading) return <div className="h-screen flex items-center justify-center bg-gray-50"><div className="text-center"><div className="animate-spin text-4xl mb-4">⏳</div><p className="text-gray-500">Loading...</p></div></div>;
 
   return (
-    <div className="h-screen flex flex-col bg-gray-100">
-      <div className="bg-gray-900 text-white px-4 py-2 flex items-center justify-between text-sm">
-        <span className="text-gray-400 hidden sm:inline">Portal:</span>
-        <div className="flex gap-1 sm:gap-2">
+    <div className="h-screen flex flex-col bg-gray-50">
+      <div className="bg-white border-b border-gray-200 px-4 py-2.5 flex items-center justify-between text-sm">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 bg-black rounded-lg flex items-center justify-center text-white font-bold text-sm">D</div>
+          <span className="font-medium text-gray-900 hidden sm:inline">DXTR</span>
+        </div>
+        <div className="flex gap-1">
           {['admin', 'editor', 'client'].map(p => (
-            <button key={p} onClick={() => setPortal(p)} className={`px-2 sm:px-3 py-1 rounded text-xs sm:text-sm capitalize ${portal === p ? (p === 'admin' ? 'bg-purple-600' : p === 'editor' ? 'bg-blue-600' : 'bg-green-600') : 'bg-gray-700'}`}>
-              {p === 'admin' ? '👤' : p === 'editor' ? '🎬' : '🏠'} {p}
+            <button key={p} onClick={() => setPortal(p)} className={`px-3 sm:px-4 py-1.5 rounded-lg text-xs sm:text-sm capitalize transition-colors ${portal === p ? 'bg-black text-white' : 'text-gray-600 hover:bg-gray-100'}`}>
+              {p === 'admin' ? '👤' : p === 'editor' ? '🎬' : '🏠'} <span className="hidden sm:inline">{p}</span>
             </button>
           ))}
         </div>
-        <button onClick={handleLogout} className="text-gray-400 hover:text-white text-xs">🚪 Logout</button>
+        <button onClick={handleLogout} className="text-gray-400 hover:text-gray-900 text-xs transition-colors">Logout</button>
       </div>
       <div className="flex-1 overflow-hidden">
         {portal === 'admin' ? (
@@ -585,11 +590,10 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       const invalidEmails = allEmails.filter(e => !emailRegex.test(e));
       if (invalidEmails.length > 0) throw new Error(`Invalid email format: ${invalidEmails.join(', ')}`);
       
-      const allClientTaskIds = project.tasks.filter(t => t.is_client_task).map(t => t.id);
-      const pendingTaskIds = project.tasks.filter(t => t.is_client_task && !t.file_url).map(t => t.id);
-      const tasksWithFiles = allClientTaskIds.filter(id => !pendingTaskIds.includes(id));
+      // Use client's permanent dashboard token instead of magic link
+      const dashboardToken = client.dashboard_token;
+      if (!dashboardToken) throw new Error('Client dashboard link not set up. Please refresh and try again.');
       
-      const magicLink = await db.createMagicLink(project.id, client.id, tasksWithFiles, pendingTaskIds);
       const files = project.tasks.filter(t => taskIds.includes(t.id)).map(t => ({ type: t.text.replace('Submit ', '').replace(' to client', ''), name: t.file_name }));
       const pendingFiles = project.tasks.filter(t => t.is_client_task && !t.file_url && !taskIds.includes(t.id)).map(t => ({ type: t.text.replace('Submit ', '').replace(' to client', '') }));
       const previouslySentFiles = project.tasks.filter(t => t.is_client_task && t.sent && !taskIds.includes(t.id)).map(t => ({ type: t.text.replace('Submit ', '').replace(' to client', ''), name: t.file_name }));
@@ -597,7 +601,15 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       const res = await fetch('/api/send-email', { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
-        body: JSON.stringify({ to: allEmails, projectName: project.name, clientName: client.name, magicLinkToken: magicLink.token, files, pendingFiles, previouslySentFiles }) 
+        body: JSON.stringify({ 
+          to: allEmails, 
+          projectName: project.name, 
+          clientName: client.name, 
+          dashboardToken, // Use permanent dashboard token
+          files, 
+          pendingFiles, 
+          previouslySentFiles 
+        }) 
       });
       
       const resData = await res.json();
@@ -752,31 +764,36 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
   return (
     <div className="h-full flex relative">
       {sidebarOpen && <div className="fixed inset-0 bg-black/50 z-40 lg:hidden" onClick={() => setSidebarOpen(false)} />}
-      <aside className={`fixed lg:static inset-y-0 left-0 z-50 w-56 bg-gradient-to-b from-purple-700 to-purple-900 text-white flex flex-col transform transition-transform ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
-        <div className="p-4 border-b border-purple-600 flex justify-between items-center">
-          <div className="flex items-center gap-3"><div className="w-9 h-9 bg-white rounded-lg flex items-center justify-center text-purple-700 font-bold">PM</div><span className="font-semibold">Admin</span></div>
-          <button onClick={() => setSidebarOpen(false)} className="lg:hidden text-2xl">&times;</button>
+      <aside className={`fixed lg:static inset-y-0 left-0 z-50 w-60 bg-white border-r border-gray-200 flex flex-col transform transition-transform ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
+        <div className="p-5 border-b border-gray-200 flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-black rounded-xl flex items-center justify-center text-white font-bold text-lg">D</div>
+            <span className="font-semibold text-gray-900">DXTR Admin</span>
+          </div>
+          <button onClick={() => setSidebarOpen(false)} className="lg:hidden text-2xl text-gray-400">&times;</button>
         </div>
-        <nav className="flex-1 p-2 space-y-1">
-          {[{ id: 'projects', icon: '📁' }, { id: 'chat', icon: '💬' }, { id: 'database', icon: '🗄️' }].map(i => (
-            <button key={i.id} onClick={() => { setTab(i.id); setSidebarOpen(false); }} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg capitalize ${tab === i.id ? 'bg-white text-purple-700' : 'text-purple-200 hover:bg-purple-600'}`}>{i.icon} {i.id}</button>
+        <nav className="flex-1 p-3 space-y-1">
+          {[{ id: 'projects', icon: '📁', label: 'Projects' }, { id: 'chat', icon: '💬', label: 'Chat' }, { id: 'database', icon: '🗄️', label: 'Database' }].map(i => (
+            <button key={i.id} onClick={() => { setTab(i.id); setSidebarOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors ${tab === i.id ? 'bg-gray-100 text-gray-900' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'}`}>{i.icon} {i.label}</button>
           ))}
         </nav>
-        <div className="p-2 border-t border-purple-600"><button onClick={refreshData} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-purple-200 hover:bg-purple-600 text-sm">🔄 Refresh</button></div>
+        <div className="p-3 border-t border-gray-200">
+          <button onClick={refreshData} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm text-gray-600 hover:bg-gray-50 hover:text-gray-900 transition-colors">🔄 Refresh Data</button>
+        </div>
       </aside>
 
-      <main className="flex-1 flex flex-col overflow-hidden">
+      <main className="flex-1 flex flex-col overflow-hidden bg-gray-50">
         {tab === 'projects' && (
           <>
-            <header className="bg-white border-b px-3 sm:px-6 py-3 flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 sm:gap-4 flex-1">
+            <header className="bg-white border-b border-gray-200 px-4 sm:px-8 py-5 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-4 flex-1">
                 <button onClick={() => setSidebarOpen(true)} className="lg:hidden text-xl">☰</button>
-                <h1 className="text-lg font-bold hidden sm:block">Projects</h1>
-                <select value={clientFilter} onChange={e => setClientFilter(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm"><option value="all">All Clients</option><option value="orphaned">⚠️ No Client</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+                <h1 className="text-xl font-semibold text-gray-900 hidden sm:block">Projects</h1>
+                <select value={clientFilter} onChange={e => setClientFilter(e.target.value)} className="border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-black focus:border-black"><option value="all">All Clients</option><option value="orphaned">⚠️ No Client</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
               </div>
-              <button onClick={() => setModal({ type: 'addProject' })} className="bg-purple-600 text-white px-3 py-2 rounded-lg text-xs sm:text-sm font-medium">+ New</button>
+              <button onClick={() => setModal({ type: 'addProject' })} className="bg-black text-white px-5 py-2.5 rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors">+ New Project</button>
             </header>
-            <div className="flex-1 overflow-auto p-2 sm:p-4 space-y-3">
+            <div className="flex-1 overflow-auto p-4 sm:p-8 space-y-4">
               {filtered.map(project => {
                 const client = project.client || getClient(project.client_id);
                 const isOrphaned = !client && project.client_id;
@@ -788,9 +805,9 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                 const totalCount = project.tasks?.length || 0;
                 const serviceTypes = project.service_types?.length ? project.service_types : getServiceTypesFromTasks(project.tasks);
                 return (
-                  <div key={project.id} className="bg-white rounded-xl shadow-sm border overflow-hidden">
-                    <div className="px-3 sm:px-4 py-3 flex items-center gap-2 sm:gap-4 cursor-pointer hover:bg-gray-50" onClick={() => setExpanded(isExp ? null : project.id)}>
-                      <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${project.status === 'completed' ? 'bg-green-500' : project.status === 'revision' ? 'bg-red-500' : 'bg-yellow-400'}`} />
+                  <div key={project.id} className="bg-white rounded-2xl border border-gray-200 overflow-hidden hover:shadow-md transition-shadow">
+                    <div className="px-5 sm:px-6 py-5 flex items-center gap-4 cursor-pointer hover:bg-gray-50 transition-colors" onClick={() => setExpanded(isExp ? null : project.id)}>
+                      <div className={`w-3 h-3 rounded-full flex-shrink-0 ${project.status === 'completed' ? 'bg-green-500' : project.status === 'revision' ? 'bg-amber-500' : 'bg-blue-500'}`} />
                       <div className="flex-1 min-w-0">
                         <span className="font-semibold text-sm sm:text-base">{project.name}</span>
                         <span className={`text-xs ml-2 hidden sm:inline ${isOrphaned ? 'text-red-500' : 'text-gray-500'}`}>• {client?.name || (isOrphaned ? '⚠️ No Client' : 'No Client')}</span>
@@ -798,50 +815,81 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                       </div>
                       <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
                         <span className="text-xs text-gray-500">{completedCount}/{totalCount}</span>
-                        <span className={`text-xs px-2 py-0.5 rounded-full ${project.status === 'completed' ? 'bg-green-100 text-green-700' : project.status === 'revision' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`}>{project.status === 'completed' ? 'Completed' : project.status === 'revision' ? 'Revision' : 'Active'}</span>
-                        {project.status !== 'completed' && <span className={`text-xs px-2 py-0.5 rounded-full ${isOverdue(project.due_date, project.status) ? 'bg-red-500 text-white' : 'bg-gray-100'}`}>{formatDueDate(project.due_date)}</span>}
-                        <span className={`${isExp ? 'rotate-180' : ''} transition-transform`}>▼</span>
+                        <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${project.status === 'completed' ? 'bg-green-100 text-green-700' : project.status === 'revision' ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'}`}>{project.status === 'completed' ? 'Completed' : project.status === 'revision' ? 'Revision' : 'Active'}</span>
+                        {project.status !== 'completed' && <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${isOverdue(project.due_date, project.status) ? 'bg-red-500 text-white' : 'bg-gray-100 text-gray-600'}`}>{formatDueDate(project.due_date)}</span>}
+                        <span className={`text-gray-400 ${isExp ? 'rotate-180' : ''} transition-transform`}>▼</span>
                       </div>
                     </div>
                     {isExp && (
-                      <div className="border-t">
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-3 sm:p-4 bg-gray-50 text-sm">
-                          <div><div className="flex justify-between mb-2"><span className="font-medium text-gray-600">Details</span><button onClick={() => setModal({ type: 'editProject', project })} className="text-purple-600 text-xs">Edit</button></div><p className={isOrphaned ? 'text-red-500' : 'text-gray-500'}>Client: {client?.name || (isOrphaned ? '⚠️ Deleted - Please reassign' : 'None')}</p><p className="text-gray-500">Due: {new Date(project.due_date).toLocaleDateString()}</p></div>
-                          <div><div className="flex justify-between mb-2"><span className="font-medium text-gray-600">Revisions</span><button onClick={() => setModal({ type: 'addRevision', project, serviceTypes })} className="text-purple-600 text-xs">+ Add</button></div>{project.revisions?.map(r => <div key={r.id} className="flex items-center gap-1 mb-1"><p className="text-xs flex-1"><span className="text-purple-600">{r.type}:</span> {r.note}</p><button onClick={() => setModal({ type: 'editRevision', project, revision: r, serviceTypes })} className="text-xs hover:bg-gray-200 p-1 rounded">✏️</button></div>)}{!project.revisions?.length && <p className="text-gray-400 text-xs italic">None</p>}</div>
-                          <div><div className="flex justify-between mb-2"><span className="font-medium text-gray-600">Client Notes</span><button onClick={() => setModal({ type: 'editNotes', client })} className="text-purple-600 text-xs">Edit</button></div><p className="text-xs text-gray-500">{client?.notes || 'No notes'}</p></div>
+                      <div className="border-t border-gray-200">
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 p-5 sm:p-6 bg-white text-sm">
+                          <div>
+                            <div className="flex justify-between mb-3"><span className="font-medium text-gray-900">Details</span><button onClick={() => setModal({ type: 'editProject', project })} className="text-gray-500 hover:text-black text-xs">Edit</button></div>
+                            <p className={isOrphaned ? 'text-red-500' : 'text-gray-600'}>Client: {client?.name || (isOrphaned ? '⚠️ Deleted - Please reassign' : 'None')}</p>
+                            <p className="text-gray-600">Due: {new Date(project.due_date).toLocaleDateString()}</p>
+                            {client?.dashboard_token && (
+                              <div className="mt-3 flex items-center gap-2">
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const url = `${window.location.origin}/client/${client.dashboard_token}`;
+                                    navigator.clipboard.writeText(url);
+                                    e.target.innerText = '✓ Copied!';
+                                    setTimeout(() => e.target.innerText = '📋 Copy Client Link', 1500);
+                                  }}
+                                  className="text-xs bg-gray-100 hover:bg-gray-200 px-3 py-1.5 rounded-lg transition-colors"
+                                >
+                                  📋 Copy Client Link
+                                </button>
+                                <a href={`/client/${client.dashboard_token}`} target="_blank" className="text-xs text-gray-400 hover:text-black">↗</a>
+                              </div>
+                            )}
+                          </div>
+                          <div>
+                            <div className="flex justify-between mb-3"><span className="font-medium text-gray-900">Revisions</span><button onClick={() => setModal({ type: 'addRevision', project, serviceTypes })} className="text-gray-500 hover:text-black text-xs">+ Add</button></div>
+                            {project.revisions?.map(r => <div key={r.id} className="flex items-center gap-1 mb-2"><p className="text-xs flex-1"><span className="font-medium">{r.type}:</span> <span className="text-gray-600">{r.note}</span></p><button onClick={() => setModal({ type: 'editRevision', project, revision: r, serviceTypes })} className="text-xs hover:bg-gray-100 p-1 rounded">✏️</button></div>)}
+                            {!project.revisions?.length && <p className="text-gray-400 text-xs italic">None</p>}
+                          </div>
+                          <div>
+                            <div className="flex justify-between mb-3"><span className="font-medium text-gray-900">Client Notes</span><button onClick={() => setModal({ type: 'editNotes', client })} className="text-gray-500 hover:text-black text-xs">Edit</button></div>
+                            <p className="text-xs text-gray-600">{client?.notes || 'No notes'}</p>
+                          </div>
                         </div>
-                        <div className="p-3 sm:p-4 border-t bg-blue-50"><h4 className="font-medium text-sm mb-3">🎬 Editor Tasks</h4><div className="space-y-2">{editorTasks.map(t => <label key={t.id} className="flex items-center gap-3 p-2 bg-white rounded-lg border cursor-pointer"><input type="checkbox" checked={t.completed} onChange={() => toggleTask(project.id, t.id, t.completed)} className="w-4 h-4" /><span className={t.completed ? 'line-through text-gray-400' : ''}>{t.text}</span></label>)}</div></div>
-                        <div className="p-3 sm:p-4 border-t bg-purple-50">
-                          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-3">
-                            <h4 className="font-medium text-sm">📧 Submit to Client</h4>
+                        <div className="p-5 sm:p-6 border-t border-gray-200 bg-gray-50">
+                          <h4 className="font-medium text-sm mb-4 text-gray-900">🎬 Editor Tasks</h4>
+                          <div className="space-y-2">{editorTasks.map(t => <label key={t.id} className="flex items-center gap-3 p-3 bg-white rounded-xl border border-gray-200 cursor-pointer hover:border-gray-300 transition-colors"><input type="checkbox" checked={t.completed} onChange={() => toggleTask(project.id, t.id, t.completed)} className="w-4 h-4 rounded" /><span className={t.completed ? 'line-through text-gray-400' : 'text-gray-700'}>{t.text}</span></label>)}</div>
+                        </div>
+                        <div className="p-5 sm:p-6 border-t border-gray-200">
+                          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 mb-4">
+                            <h4 className="font-medium text-sm text-gray-900">📧 Client Deliverables</h4>
                             <div className="flex gap-2">
-                              {clientTasks.some(t => t.sent) && <button onClick={() => { if(confirm('Resend all files? This creates a new magic link.')) resendToClient(project, client); }} className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs">🔄 Resend All</button>}
-                              {readyToSend.length > 0 && <button onClick={() => setModal({ type: 'sendToClient', project, tasks: readyToSend, client })} className="bg-green-600 text-white px-3 py-1.5 rounded-lg text-xs">📤 Send {readyToSend.length} File{readyToSend.length > 1 ? 's' : ''}</button>}
+                              {clientTasks.some(t => t.sent) && <button onClick={() => { if(confirm('Resend notification? Client will receive a new email with their dashboard link.')) resendToClient(project, client); }} className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg text-xs hover:bg-gray-200 transition-colors">🔄 Resend Notification</button>}
+                              {readyToSend.length > 0 && <button onClick={() => setModal({ type: 'sendToClient', project, tasks: readyToSend, client })} className="bg-black text-white px-4 py-2 rounded-lg text-xs hover:bg-gray-800 transition-colors">📤 Send {readyToSend.length} File{readyToSend.length > 1 ? 's' : ''}</button>}
                             </div>
                           </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">{clientTasks.map(t => {
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">{clientTasks.map(t => {
                             const label = t.text.replace('Submit ', '').replace(' to client', '');
                             const uploadProgress = getUploadProgress(project.id, t.id);
-                            return (<div key={t.id} className={`p-3 rounded-lg border-2 ${t.sent ? 'bg-green-50 border-green-300' : t.file_url ? 'bg-yellow-50 border-yellow-300' : 'bg-white border-gray-200'}`}>
-                              <div className="flex justify-between mb-2"><span className="font-medium text-sm">{label}</span>{t.sent && <span className="text-green-600 text-xs">✓ Sent</span>}{t.file_url && t.file_url !== 'uploading' && !t.sent && <span className="text-yellow-600 text-xs">Ready</span>}{t.file_url === 'uploading' && <span className="text-blue-600 text-xs">Uploading...</span>}</div>
+                            return (<div key={t.id} className={`p-4 rounded-xl border-2 transition-colors ${t.sent ? 'bg-green-50 border-green-200' : t.file_url ? 'bg-amber-50 border-amber-200' : 'bg-white border-gray-200 hover:border-gray-300'}`}>
+                              <div className="flex justify-between mb-3"><span className="font-medium text-sm text-gray-900">{label}</span>{t.sent && <span className="text-green-600 text-xs font-medium">✓ Sent</span>}{t.file_url && t.file_url !== 'uploading' && !t.sent && <span className="text-amber-600 text-xs font-medium">Ready to Send</span>}{t.file_url === 'uploading' && <span className="text-blue-600 text-xs font-medium">Uploading...</span>}</div>
                               {t.sent ? (
                                 <div>
-                                  <p className="text-sm text-green-600 mb-2">📎 {t.file_name}</p>
-                                  <a href={t.file_url} target="_blank" rel="noopener noreferrer" download className="text-xs text-purple-600 hover:underline">📥 Download</a>
+                                  <p className="text-sm text-gray-600 mb-2">📎 {t.file_name}</p>
+                                  <a href={t.file_url} target="_blank" rel="noopener noreferrer" download className="text-xs text-gray-500 hover:text-black">📥 Download</a>
                                 </div>
                               ) : t.file_url ? (
                                 <div>
-                                  <p className="text-sm text-yellow-700 mb-1">📎 {t.file_name}</p>
+                                  <p className="text-sm text-gray-700 mb-2">📎 {t.file_name}</p>
                                   {t.file_url !== 'uploading' && (
-                                    <div className="flex gap-2">
-                                      <a href={t.file_url} target="_blank" rel="noopener noreferrer" download className="text-xs text-purple-600 hover:underline">📥 Download</a>
-                                      <button onClick={() => removeFile(project.id, t.id, t.file_url)} className="text-xs text-red-500">Remove</button>
+                                    <div className="flex gap-3">
+                                      <a href={t.file_url} target="_blank" rel="noopener noreferrer" download className="text-xs text-gray-500 hover:text-black">📥 Download</a>
+                                      <button onClick={() => removeFile(project.id, t.id, t.file_url)} className="text-xs text-red-500 hover:text-red-700">Remove</button>
                                     </div>
                                   )}
                                   {uploadProgress && (
-                                    <div className="mt-2">
-                                      <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-                                        <div className="h-full bg-purple-600 transition-all" style={{ width: `${uploadProgress.progress}%` }} />
+                                    <div className="mt-3">
+                                      <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                                        <div className="h-full bg-black transition-all" style={{ width: `${uploadProgress.progress}%` }} />
                                       </div>
                                       <div className="flex justify-between text-xs text-gray-500 mt-1">
                                         <span>{uploadProgress.progress}%</span>
@@ -852,35 +900,35 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                                 </div>
                               ) : (
                                 <div 
-                                  className="border-2 border-dashed border-gray-300 rounded-lg p-3 text-center cursor-pointer hover:bg-gray-50 hover:border-purple-400 transition-colors"
-                                  onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('border-purple-500', 'bg-purple-50'); }}
-                                  onDragLeave={e => { e.preventDefault(); e.currentTarget.classList.remove('border-purple-500', 'bg-purple-50'); }}
+                                  className="border-2 border-dashed border-gray-300 rounded-xl p-4 text-center cursor-pointer hover:bg-gray-50 hover:border-gray-400 transition-colors"
+                                  onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('border-black', 'bg-gray-100'); }}
+                                  onDragLeave={e => { e.preventDefault(); e.currentTarget.classList.remove('border-black', 'bg-gray-100'); }}
                                   onDrop={e => { 
                                     e.preventDefault(); 
-                                    e.currentTarget.classList.remove('border-purple-500', 'bg-purple-50');
+                                    e.currentTarget.classList.remove('border-black', 'bg-gray-100');
                                     if (e.dataTransfer.files?.length) handleFileUpload(project.id, t.id, e.dataTransfer.files);
                                   }}
                                   onClick={() => document.getElementById(`file-${t.id}`).click()}
                                 >
-                                  <p className="text-gray-400 text-sm">📁 Drop files or click to upload</p>
-                                  <p className="text-gray-300 text-xs">Multiple files allowed</p>
+                                  <p className="text-gray-500 text-sm">📁 Drop files or click to upload</p>
+                                  <p className="text-gray-400 text-xs mt-1">Multiple files supported</p>
                                   <input id={`file-${t.id}`} type="file" multiple className="hidden" onChange={e => e.target.files?.length && handleFileUpload(project.id, t.id, e.target.files)} />
                                 </div>
                               )}
                             </div>);
                           })}</div>
                         </div>
-                        <div className="p-3 border-t bg-gray-50 flex justify-end"><button onClick={() => setModal({ type: 'deleteProject', project })} className="text-xs text-red-500">🗑️ Delete Project</button></div>
+                        <div className="px-5 py-4 border-t border-gray-200 bg-gray-50 flex justify-end"><button onClick={() => setModal({ type: 'deleteProject', project })} className="text-xs text-gray-400 hover:text-red-500 transition-colors">🗑️ Delete Project</button></div>
                       </div>
                     )}
                   </div>
                 );
               })}
-              {filtered.length === 0 && <div className="text-center py-12 text-gray-400"><p className="text-4xl mb-2">📁</p><p>No projects yet</p><button onClick={() => setModal({ type: 'addProject' })} className="text-purple-600 mt-2">Create your first project</button></div>}
+              {filtered.length === 0 && <div className="text-center py-16 text-gray-400"><p className="text-5xl mb-4">📁</p><p className="text-lg">No projects yet</p><button onClick={() => setModal({ type: 'addProject' })} className="text-black mt-3 hover:underline">Create your first project</button></div>}
             </div>
           </>
         )}
-        {tab === 'chat' && <div className="flex-1 flex items-center justify-center text-gray-400"><div className="text-center"><p className="text-4xl mb-2">💬</p><p>Chat coming soon</p></div></div>}
+        {tab === 'chat' && <div className="flex-1 flex items-center justify-center text-gray-400"><div className="text-center"><p className="text-5xl mb-4">💬</p><p className="text-lg">Chat coming soon</p></div></div>}
         {tab === 'database' && <Database clients={clients} setClients={setClients} services={services} setServices={setServices} editors={editors} setEditors={setEditors} setSidebarOpen={setSidebarOpen} refreshData={refreshData} />}
       </main>
 
