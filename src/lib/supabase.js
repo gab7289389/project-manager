@@ -3,6 +3,9 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
+// Bunny Edge Script URL - set in Vercel env vars
+const UPLOAD_SERVER_URL = process.env.NEXT_PUBLIC_UPLOAD_SERVER_URL || '';
+
 if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Missing Supabase environment variables');
 }
@@ -217,13 +220,17 @@ export const markMagicLinkAccessed = async (token) => {
 };
 
 // =============================================
-// FILE STORAGE - Uses Bunny CDN with progress
+// FILE STORAGE - Direct upload via Railway server
+// No size limits, full speed, progress tracking
 // =============================================
 
 export const uploadFile = async (projectId, file, onProgress) => {
-  // Sanitize filename
   const safeFileName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
   const fileName = `${projectId}/${Date.now()}-${safeFileName}`;
+  
+  if (!UPLOAD_SERVER_URL) {
+    throw new Error('Upload server not configured');
+  }
   
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -239,7 +246,7 @@ export const uploadFile = async (projectId, file, onProgress) => {
         const now = Date.now();
         const timeDiff = (now - lastTime) / 1000;
         
-        if (timeDiff >= 0.2) {
+        if (timeDiff >= 0.1) {
           const bytesDiff = e.loaded - lastLoaded;
           currentSpeed = bytesDiff / timeDiff;
           lastLoaded = e.loaded;
@@ -255,30 +262,43 @@ export const uploadFile = async (projectId, file, onProgress) => {
     
     xhr.addEventListener('load', () => {
       if (xhr.status >= 200 && xhr.status < 300) {
-        // Construct the public URL
-        const publicUrl = `https://dxtr-staging.b-cdn.net/uploads/${fileName}`;
-        resolve({
-          fileName: file.name,
-          fileUrl: publicUrl
-        });
+        try {
+          const result = JSON.parse(xhr.responseText);
+          resolve({
+            fileName: file.name,
+            fileUrl: result.url
+          });
+        } catch (e) {
+          reject(new Error('Invalid server response'));
+        }
       } else {
-        reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
+        try {
+          const err = JSON.parse(xhr.responseText);
+          reject(new Error(err.error || `Upload failed: ${xhr.status}`));
+        } catch {
+          reject(new Error(`Upload failed: ${xhr.status}`));
+        }
       }
     });
     
-    xhr.addEventListener('error', () => reject(new Error('Upload failed - network error')));
+    xhr.addEventListener('error', () => reject(new Error('Network error')));
     xhr.addEventListener('abort', () => reject(new Error('Upload aborted')));
     
-    // Upload directly to Bunny CDN via the API route (which will proxy to Bunny)
-    xhr.open('POST', '/api/bunny-upload-stream');
+    // Send directly to Railway upload server
+    xhr.open('POST', `${UPLOAD_SERVER_URL}/upload`);
     xhr.setRequestHeader('X-File-Name', encodeURIComponent(fileName));
     xhr.send(file);
   });
 };
 
 export const deleteFile = async (fileUrl) => {
+  if (!UPLOAD_SERVER_URL) {
+    console.error('Upload server not configured');
+    return;
+  }
+  
   try {
-    const response = await fetch('/api/bunny-delete', {
+    const response = await fetch(`${UPLOAD_SERVER_URL}/delete`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ filePath: fileUrl })
