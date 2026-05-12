@@ -1,10 +1,252 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import * as db from '../lib/supabase';
+import { getPendingUploads, clearPendingUpload } from '../lib/supabase';
 
 // =============================================
 // PASSWORD PROTECTION - CHANGE THESE!
 // =============================================
 const VALID_PASSWORDS = ['admin123', 'coowner123'];
+
+// =============================================
+// UPLOAD MANAGER (Google Drive style)
+// =============================================
+
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function formatTime(seconds) {
+  if (!seconds || seconds === Infinity || isNaN(seconds)) return '--:--';
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.round(seconds % 60);
+    return `${mins}m ${secs}s`;
+  }
+  const hours = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  return `${hours}h ${mins}m`;
+}
+
+const StatusIcon = ({ status }) => {
+  switch (status) {
+    case 'uploading': return <span className="inline-block animate-spin">⏳</span>;
+    case 'waiting': return <span>📶</span>;
+    case 'retrying': return <span className="text-yellow-500">🔄</span>;
+    case 'queued': return <span className="text-gray-400">⏸️</span>;
+    case 'complete': return <span className="text-green-500">✅</span>;
+    case 'error': return <span className="text-red-500">❌</span>;
+    case 'finalizing': return <span className="animate-pulse">⚡</span>;
+    case 'checking': return <span>🔍</span>;
+    default: return <span>📄</span>;
+  }
+};
+
+function UploadItem({ item, onCancel, onRetry }) {
+  const progress = item.progress || 0;
+  const speed = item.speed ? formatBytes(item.speed) + '/s' : '';
+  const eta = item.eta ? formatTime(item.eta) : '';
+  
+  return (
+    <div className="px-3 py-2 border-b border-gray-100 last:border-b-0">
+      <div className="flex items-center gap-2">
+        <StatusIcon status={item.status} />
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium truncate" title={item.fileName}>{item.fileName}</div>
+          <div className="text-xs text-gray-500 flex items-center gap-2">
+            {item.status === 'complete' ? (
+              <span className="text-green-600">Complete</span>
+            ) : item.status === 'error' ? (
+              <span className="text-red-500">{item.error || 'Failed'}</span>
+            ) : item.status === 'queued' ? (
+              <span>Queued</span>
+            ) : item.statusMessage ? (
+              <span>{item.statusMessage}</span>
+            ) : (
+              <>
+                <span>{progress}%</span>
+                {speed && <span>• {speed}</span>}
+                {eta && <span>• {eta}</span>}
+              </>
+            )}
+          </div>
+        </div>
+        {item.status === 'error' && onRetry && (
+          <button onClick={() => onRetry(item.id)} className="text-blue-500 hover:text-blue-700 text-xs">Retry</button>
+        )}
+        {['uploading', 'queued', 'waiting', 'retrying'].includes(item.status) && onCancel && (
+          <button onClick={() => onCancel(item.id)} className="text-gray-400 hover:text-red-500 text-xs">✕</button>
+        )}
+      </div>
+      {!['complete', 'error', 'queued'].includes(item.status) && (
+        <div className="mt-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+          <div className="h-full bg-purple-600 transition-all duration-300" style={{ width: `${progress}%` }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UploadManager({ uploads, onCancel, onRetry, onClear }) {
+  const [isMinimized, setIsMinimized] = useState(false);
+  
+  const activeUploads = uploads.filter(u => ['uploading', 'waiting', 'retrying', 'finalizing', 'checking'].includes(u.status));
+  const queuedUploads = uploads.filter(u => u.status === 'queued');
+  const completedUploads = uploads.filter(u => u.status === 'complete');
+  const errorUploads = uploads.filter(u => u.status === 'error');
+  
+  const totalSpeed = activeUploads.reduce((sum, u) => sum + (u.speed || 0), 0);
+  const totalRemainingBytes = uploads
+    .filter(u => !['complete', 'error'].includes(u.status))
+    .reduce((sum, u) => sum + ((u.fileSize || 0) * (1 - (u.progress || 0) / 100)), 0);
+  const totalEta = totalSpeed > 0 ? totalRemainingBytes / totalSpeed : 0;
+  
+  const inProgressCount = activeUploads.length + queuedUploads.length;
+  
+  if (uploads.length === 0) return null;
+  
+  return (
+    <div className="fixed bottom-4 right-4 w-80 bg-white rounded-lg shadow-2xl border border-gray-200 z-50 overflow-hidden">
+      <div 
+        className="bg-gray-50 px-3 py-2 flex items-center justify-between cursor-pointer border-b border-gray-200"
+        onClick={() => setIsMinimized(!isMinimized)}
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">
+            {inProgressCount > 0 ? (
+              <>Uploading {inProgressCount} file{inProgressCount !== 1 ? 's' : ''}</>
+            ) : completedUploads.length > 0 && errorUploads.length === 0 ? (
+              <>{completedUploads.length} upload{completedUploads.length !== 1 ? 's' : ''} complete</>
+            ) : errorUploads.length > 0 ? (
+              <>{errorUploads.length} failed</>
+            ) : (
+              <>Uploads</>
+            )}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          {inProgressCount > 0 && totalSpeed > 0 && (
+            <span className="text-xs text-gray-500">{formatBytes(totalSpeed)}/s</span>
+          )}
+          <button className="text-gray-400 hover:text-gray-600 text-xs">{isMinimized ? '▲' : '▼'}</button>
+          <button onClick={(e) => { e.stopPropagation(); onClear?.(); }} className="text-gray-400 hover:text-gray-600 text-xs">✕</button>
+        </div>
+      </div>
+      
+      {!isMinimized && (
+        <div className="max-h-64 overflow-y-auto">
+          {uploads.map(upload => (
+            <UploadItem key={upload.id} item={upload} onCancel={onCancel} onRetry={onRetry} />
+          ))}
+        </div>
+      )}
+      
+      {!isMinimized && inProgressCount > 0 && (
+        <div className="bg-gray-50 px-3 py-2 border-t border-gray-200 text-xs text-gray-500 flex justify-between">
+          <span>
+            {activeUploads.length} uploading{queuedUploads.length > 0 && `, ${queuedUploads.length} queued`}
+          </span>
+          <span>{totalEta > 0 && `${formatTime(totalEta)} remaining`}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Hook to manage upload queue
+function useUploadManager(maxConcurrent = 2) {
+  const [uploads, setUploads] = useState([]);
+  
+  const addToQueue = useCallback((files, projectId, taskId = null) => {
+    const newUploads = files.map(file => ({
+      id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      fileName: file.name,
+      fileSize: file.size,
+      file,
+      projectId,
+      taskId,
+      status: 'queued',
+      progress: 0,
+      speed: 0,
+      eta: 0,
+      error: null,
+      statusMessage: null,
+      fileUrl: null,
+    }));
+    
+    setUploads(prev => [...prev, ...newUploads]);
+    return newUploads.map(u => u.id);
+  }, []);
+  
+  // Process queue
+  useEffect(() => {
+    const active = uploads.filter(u => ['uploading', 'waiting', 'retrying', 'finalizing', 'checking'].includes(u.status));
+    const queued = uploads.filter(u => u.status === 'queued');
+    
+    if (active.length >= maxConcurrent || queued.length === 0) return;
+    
+    const toStart = queued.slice(0, maxConcurrent - active.length);
+    
+    toStart.forEach(upload => {
+      setUploads(prev => prev.map(u => u.id === upload.id ? { ...u, status: 'uploading' } : u));
+      
+      (async () => {
+        try {
+          const result = await db.uploadFile(
+            upload.projectId,
+            upload.file,
+            (percent, speed, eta) => {
+              setUploads(prev => prev.map(u => 
+                u.id === upload.id ? { ...u, progress: percent, speed, eta } : u
+              ));
+            },
+            (status, message) => {
+              setUploads(prev => prev.map(u => 
+                u.id === upload.id ? { ...u, status, statusMessage: message } : u
+              ));
+            }
+          );
+          
+          setUploads(prev => prev.map(u => 
+            u.id === upload.id ? { ...u, status: 'complete', progress: 100, fileUrl: result.fileUrl } : u
+          ));
+        } catch (error) {
+          setUploads(prev => prev.map(u => 
+            u.id === upload.id ? { ...u, status: 'error', error: error.message } : u
+          ));
+        }
+      })();
+    });
+  }, [uploads, maxConcurrent]);
+  
+  const cancelUpload = useCallback((id) => {
+    setUploads(prev => prev.filter(u => u.id !== id));
+  }, []);
+  
+  const retryUpload = useCallback((id) => {
+    setUploads(prev => prev.map(u => 
+      u.id === id ? { ...u, status: 'queued', progress: 0, error: null, statusMessage: null } : u
+    ));
+  }, []);
+  
+  const clearCompleted = useCallback(() => {
+    setUploads(prev => prev.filter(u => !['complete', 'error'].includes(u.status)));
+  }, []);
+  
+  const clearAll = useCallback(() => {
+    setUploads([]);
+  }, []);
+  
+  return { uploads, addToQueue, cancelUpload, retryUpload, clearCompleted, clearAll };
+}
+
+// =============================================
+// MAIN APP
+// =============================================
 
 function LoginScreen({ onLogin }) {
   const [password, setPassword] = useState('');
@@ -67,6 +309,9 @@ export default function App() {
   const [editors, setEditors] = useState([]);
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
+  
+  // Upload manager
+  const { uploads, addToQueue, cancelUpload, retryUpload, clearCompleted, clearAll } = useUploadManager(2);
 
   useEffect(() => {
     const auth = localStorage.getItem('pm_authenticated');
@@ -75,6 +320,17 @@ export default function App() {
   }, []);
 
   useEffect(() => { if (isAuthenticated) loadAllData(); }, [isAuthenticated]);
+  
+  // Check for pending uploads on mount
+  useEffect(() => {
+    if (isAuthenticated) {
+      const pending = getPendingUploads();
+      if (pending.length > 0) {
+        console.log('Found pending uploads:', pending);
+        // Could show a notification here asking user to resume
+      }
+    }
+  }, [isAuthenticated]);
 
   const loadAllData = async () => {
     try {
@@ -82,7 +338,6 @@ export default function App() {
       const [c, s, e, p] = await Promise.all([db.getClients(), db.getServices(), db.getEditors(), db.getProjects()]);
       setClients(c || []); setServices(s || []); setEditors(e || []);
       
-      // Compute status for each project based on tasks and revisions
       const projectsWithStatus = (p || []).map(project => {
         const allComplete = project.tasks?.every(t => t.completed) || false;
         const hasRevisions = project.revisions?.length > 0;
@@ -114,8 +369,29 @@ export default function App() {
         <button onClick={handleLogout} className="text-gray-400 hover:text-white text-xs">🚪 Logout</button>
       </div>
       <div className="flex-1 overflow-hidden">
-        {portal === 'admin' ? <AdminPortal clients={clients} setClients={setClients} services={services} setServices={setServices} editors={editors} setEditors={setEditors} projects={projects} setProjects={setProjects} sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} refreshData={loadAllData} /> : <Placeholder type={portal} />}
+        {portal === 'admin' ? (
+          <AdminPortal 
+            clients={clients} setClients={setClients} 
+            services={services} setServices={setServices} 
+            editors={editors} setEditors={setEditors} 
+            projects={projects} setProjects={setProjects} 
+            sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} 
+            refreshData={loadAllData}
+            uploads={uploads}
+            addToQueue={addToQueue}
+          />
+        ) : (
+          <Placeholder type={portal} />
+        )}
       </div>
+      
+      {/* Upload Manager - Google Drive style */}
+      <UploadManager 
+        uploads={uploads}
+        onCancel={cancelUpload}
+        onRetry={retryUpload}
+        onClear={clearAll}
+      />
     </div>
   );
 }
@@ -125,14 +401,12 @@ function Placeholder({ type }) {
   return <div className="h-full flex items-center justify-center bg-gray-50"><div className="text-center text-gray-400"><p className="text-6xl mb-4">{cfg.icon}</p><p className="text-xl font-medium capitalize">{type} Portal</p><p className="text-sm mt-2">Coming soon</p></div></div>;
 }
 
-function AdminPortal({ clients, setClients, services, setServices, editors, setEditors, projects, setProjects, sidebarOpen, setSidebarOpen, refreshData }) {
+function AdminPortal({ clients, setClients, services, setServices, editors, setEditors, projects, setProjects, sidebarOpen, setSidebarOpen, refreshData, uploads, addToQueue }) {
   const [tab, setTab] = useState('projects');
   const [clientFilter, setClientFilter] = useState('all');
   const [expanded, setExpanded] = useState(null);
   const [modal, setModal] = useState(null);
   const [saving, setSaving] = useState(false);
-
-  const [uploadProgress, setUploadProgress] = useState({});
   const [creatingProject, setCreatingProject] = useState(false);
 
   const getClient = id => clients.find(c => c.id === id);
@@ -153,12 +427,10 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     const projectName = currentProject.name || 'Unknown';
     const clientName = clients.find(c => c.id === currentProject.client_id)?.name || 'Unknown';
     
-    // Calculate new task states
     const updatedTasks = currentProject.tasks.map(t => 
       t.id === taskId ? { ...t, completed: !currentValue } : t
     );
     
-    // Calculate statuses
     const oldAllComplete = currentProject.tasks.every(t => t.completed);
     const newAllComplete = updatedTasks.every(t => t.completed);
     const hasRevisions = (currentProject.revisions?.length || 0) > 0;
@@ -166,7 +438,6 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     const oldStatus = oldAllComplete ? 'completed' : hasRevisions ? 'revision' : 'progress';
     const newStatus = newAllComplete ? 'completed' : hasRevisions ? 'revision' : 'progress';
     
-    // Update local state immediately
     setProjects(prev => prev.map(p => 
       p.id !== projectId ? p : { ...p, tasks: updatedTasks, status: newStatus }
     ));
@@ -175,7 +446,6 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       await db.updateTask(taskId, { completed: !currentValue });
       await db.updateProject(projectId, { status: newStatus });
       
-      // Send notification if status changed
       if (oldStatus !== newStatus) {
         if (newStatus === 'completed') {
           fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'project_complete', data: { projectName, clientName } }) }).catch(console.error);
@@ -186,90 +456,49 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     } catch (e) { console.error(e); await refreshData(); }
   };
 
+  // Upload files using the queue
   const handleFileUpload = async (projectId, taskId, files) => {
     const fileArray = Array.from(files);
     if (fileArray.length === 0) return;
     
-    const uploadKey = `${projectId}-${taskId}`;
+    // Add to upload queue
+    addToQueue(fileArray, projectId, taskId);
     
-    // For multiple files, we'll combine them (store as JSON array)
-    const totalSize = fileArray.reduce((sum, f) => sum + f.size, 0);
-    const fileNames = fileArray.map(f => f.name);
-    
+    // Mark task as uploading immediately
     setProjects(prev => prev.map(p => p.id !== projectId ? p : { 
       ...p, 
-      tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: fileNames.join(', '), file_url: 'uploading' } : t) 
+      tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: fileArray.map(f => f.name).join(', '), file_url: 'uploading' } : t) 
     }));
-    setUploadProgress(prev => ({ 
-      ...prev, 
-      [uploadKey]: { progress: 0, fileName: fileNames.join(', '), fileSize: totalSize, speed: 0, eta: 0, currentFile: 1, totalFiles: fileArray.length } 
-    }));
-    
-    try {
-      const uploadedFiles = [];
-      
-      for (let i = 0; i < fileArray.length; i++) {
-        const file = fileArray[i];
-        
-        setUploadProgress(prev => ({ 
-          ...prev, 
-          [uploadKey]: { ...prev[uploadKey], currentFile: i + 1, fileName: file.name } 
-        }));
-        
-        const { fileName, fileUrl } = await db.uploadFile(projectId, file, (progress, speed, eta) => {
-          // Calculate overall progress across all files
-          const fileProgress = (i * 100 + progress) / fileArray.length;
-          setUploadProgress(prev => ({ 
-            ...prev, 
-            [uploadKey]: { ...prev[uploadKey], progress: Math.round(fileProgress), speed, eta } 
-          }));
-        });
-        
-        uploadedFiles.push({ name: fileName, url: fileUrl });
-      }
-      
-      // Store multiple files as JSON if more than one, otherwise just the single file
-      const finalFileName = uploadedFiles.length === 1 
-        ? uploadedFiles[0].name 
-        : JSON.stringify(uploadedFiles.map(f => f.name));
-      const finalFileUrl = uploadedFiles.length === 1 
-        ? uploadedFiles[0].url 
-        : JSON.stringify(uploadedFiles.map(f => f.url));
-      
-      await db.updateTask(taskId, { file_name: finalFileName, file_url: finalFileUrl });
-      setProjects(prev => prev.map(p => p.id !== projectId ? p : { 
-        ...p, 
-        tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: finalFileName, file_url: finalFileUrl } : t) 
-      }));
-      
-      // Clear progress after a moment
-      setTimeout(() => setUploadProgress(prev => { const { [uploadKey]: _, ...rest } = prev; return rest; }), 1000);
-    } catch (e) { 
-      console.error(e); 
-      alert('Error uploading: ' + (e.message || 'File may be too large')); 
-      setProjects(prev => prev.map(p => p.id !== projectId ? p : { 
-        ...p, 
-        tasks: p.tasks.map(t => t.id === taskId ? { ...t, file_name: null, file_url: null } : t) 
-      }));
-      setUploadProgress(prev => { const { [uploadKey]: _, ...rest } = prev; return rest; });
-    }
   };
   
-  // Bulk upload - upload multiple files to multiple tasks at once
-  const handleBulkUpload = async (projectId, taskIds, files) => {
-    const fileArray = Array.from(files);
-    if (fileArray.length === 0 || taskIds.length === 0) return;
+  // Watch for completed uploads and update tasks
+  useEffect(() => {
+    const completedUploads = uploads.filter(u => u.status === 'complete' && u.taskId && u.fileUrl);
     
-    // Match files to tasks in order
-    const uploads = taskIds.slice(0, fileArray.length).map((taskId, i) => ({
-      taskId,
-      file: fileArray[i]
-    }));
-    
-    // Upload all files
-    for (const { taskId, file } of uploads) {
-      await handleFileUpload(projectId, taskId, [file]);
-    }
+    completedUploads.forEach(async (upload) => {
+      const project = projects.find(p => p.id === upload.projectId);
+      const task = project?.tasks?.find(t => t.id === upload.taskId);
+      
+      if (task && task.file_url === 'uploading') {
+        // Update local state
+        setProjects(prev => prev.map(p => p.id !== upload.projectId ? p : { 
+          ...p, 
+          tasks: p.tasks.map(t => t.id === upload.taskId ? { ...t, file_name: upload.fileName, file_url: upload.fileUrl } : t) 
+        }));
+        
+        // Update database
+        try {
+          await db.updateTask(upload.taskId, { file_name: upload.fileName, file_url: upload.fileUrl });
+        } catch (e) {
+          console.error('Failed to save upload to database:', e);
+        }
+      }
+    });
+  }, [uploads, projects]);
+
+  // Get upload progress for a specific task
+  const getUploadProgress = (projectId, taskId) => {
+    return uploads.find(u => u.projectId === projectId && u.taskId === taskId && !['complete', 'error'].includes(u.status));
   };
 
   const removeFile = async (projectId, taskId, fileUrl) => {
@@ -279,31 +508,22 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
 
   const sendToClient = async (project, taskIds, client) => {
     const fileNames = project.tasks.filter(t => taskIds.includes(t.id)).map(t => t.text.replace('Submit ', '').replace(' to client', ''));
-    
-    // Gather all emails (primary + additional)
     const allEmails = [client.email, ...(client.additional_emails || [])].filter(Boolean);
     
     try {
       setSaving(true);
       
-      // Validate all emails
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       const invalidEmails = allEmails.filter(e => !emailRegex.test(e));
-      if (invalidEmails.length > 0) {
-        throw new Error(`Invalid email format: ${invalidEmails.join(', ')}`);
-      }
+      if (invalidEmails.length > 0) throw new Error(`Invalid email format: ${invalidEmails.join(', ')}`);
       
-      // Get ALL client task IDs (sent + being sent now + pending) for the magic link
       const allClientTaskIds = project.tasks.filter(t => t.is_client_task).map(t => t.id);
-      // Separate pending tasks (no file) from tasks with files
       const pendingTaskIds = project.tasks.filter(t => t.is_client_task && !t.file_url).map(t => t.id);
       const tasksWithFiles = allClientTaskIds.filter(id => !pendingTaskIds.includes(id));
       
       const magicLink = await db.createMagicLink(project.id, client.id, tasksWithFiles, pendingTaskIds);
       const files = project.tasks.filter(t => taskIds.includes(t.id)).map(t => ({ type: t.text.replace('Submit ', '').replace(' to client', ''), name: t.file_name }));
-      // Get pending files (client tasks without uploads that aren't being sent now)
       const pendingFiles = project.tasks.filter(t => t.is_client_task && !t.file_url && !taskIds.includes(t.id)).map(t => ({ type: t.text.replace('Submit ', '').replace(' to client', '') }));
-      // Get previously sent files
       const previouslySentFiles = project.tasks.filter(t => t.is_client_task && t.sent && !taskIds.includes(t.id)).map(t => ({ type: t.text.replace('Submit ', '').replace(' to client', ''), name: t.file_name }));
       
       const res = await fetch('/api/send-email', { 
@@ -313,30 +533,18 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       });
       
       const resData = await res.json();
+      if (!res.ok) throw new Error(`${resData.error || 'Email failed'} (${resData.errorType || 'unknown'})`);
       
-      if (!res.ok) {
-        const errorMsg = resData.error || 'Email failed to send';
-        const errorType = resData.errorType || 'unknown';
-        throw new Error(`${errorMsg} (${errorType})`);
-      }
-      
-      // Update tasks to sent/completed
       const updatedTasks = project.tasks.map(t => taskIds.includes(t.id) ? { ...t, sent: true, completed: true } : t);
       const allComplete = updatedTasks.every(t => t.completed);
       const hasRevisions = (project.revisions?.length || 0) > 0;
       const newStatus = allComplete ? 'completed' : hasRevisions ? 'revision' : 'progress';
       
-      // Update local state with new status
       setProjects(prev => prev.map(p => p.id !== project.id ? p : { ...p, tasks: updatedTasks, status: newStatus }));
       
-      // Save to database
       await Promise.all(taskIds.map(id => db.updateTask(id, { sent: true, completed: true, sent_at: new Date().toISOString() })));
       await db.updateProject(project.id, { status: newStatus });
       
-      // NOTE: Success notification is sent via webhook when email.delivered is received
-      // This ensures we only notify on actual successful delivery
-      
-      // Send completed notification if all tasks are done
       if (newStatus === 'completed') {
         fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'project_complete', data: { projectName: project.name, clientName: client.name } }) }).catch(console.error);
       }
@@ -345,34 +553,23 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     } catch (e) { 
       console.error('Send to client error:', e); 
       alert('❌ Failed to send: ' + e.message);
-      // Send failure notification immediately - we know it failed
       fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'files_sent', data: { success: false, projectName: project.name, clientName: client.name, clientEmail: allEmails.join(', '), files: fileNames, error: e.message } }) }).catch(console.error);
       return false; 
-    }
-    finally { setSaving(false); }
+    } finally { setSaving(false); }
   };
   
-  // Resend all sent files to client (for expired links)
   const resendToClient = async (project, client) => {
     const sentTasks = project.tasks.filter(t => t.is_client_task && t.sent && t.file_url);
     const fileNames = sentTasks.map(t => t.text.replace('Submit ', '').replace(' to client', ''));
-    
-    // Gather all emails (primary + additional)
     const allEmails = [client.email, ...(client.additional_emails || [])].filter(Boolean);
     
     try {
       setSaving(true);
-      if (sentTasks.length === 0) {
-        alert('No files have been sent to this client yet');
-        return false;
-      }
+      if (sentTasks.length === 0) { alert('No files have been sent to this client yet'); return false; }
       
-      // Validate all emails
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       const invalidEmails = allEmails.filter(e => !emailRegex.test(e));
-      if (invalidEmails.length > 0) {
-        throw new Error(`Invalid email format: ${invalidEmails.join(', ')}`);
-      }
+      if (invalidEmails.length > 0) throw new Error(`Invalid email format: ${invalidEmails.join(', ')}`);
       
       const sentTaskIds = sentTasks.map(t => t.id);
       const pendingTaskIds = project.tasks.filter(t => t.is_client_task && !t.file_url).map(t => t.id);
@@ -384,25 +581,17 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       const res = await fetch('/api/send-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: allEmails, projectName: project.name, clientName: client.name, magicLinkToken: magicLink.token, files, pendingFiles, previouslySentFiles: [], isResend: true }) });
       
       const resData = await res.json();
+      if (!res.ok) throw new Error(`${resData.error || 'Email failed'} (${resData.errorType || 'unknown'})`);
       
-      if (!res.ok) {
-        const errorMsg = resData.error || 'Email failed to send';
-        const errorType = resData.errorType || 'unknown';
-        throw new Error(`${errorMsg} (${errorType})`);
-      }
-      
-      // NOTE: Success notification sent via webhook on email.delivered
       return true;
     } catch (e) { 
       console.error('Resend error:', e); 
       alert('❌ Failed to resend: ' + e.message);
       fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'files_sent', data: { success: false, projectName: project.name + ' (RESEND)', clientName: client.name, clientEmail: allEmails.join(', '), files: fileNames, error: e.message } }) }).catch(console.error);
       return false; 
-    }
-    finally { setSaving(false); }
+    } finally { setSaving(false); }
   };
 
-  // Optimistic revision add - no page refresh
   const addRevision = async (projectId, data) => {
     const tempId = 'temp-' + Date.now();
     const tempRevision = { id: tempId, type: data.type, note: data.note || 'Revision requested' };
@@ -411,12 +600,8 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       { id: tempId + '-2', text: `Submit ${data.type} Revision to client`, is_editor_task: false, is_client_task: true, completed: false }
     ];
     
-    // Optimistic update
     setProjects(prev => prev.map(p => p.id !== projectId ? p : {
-      ...p,
-      status: 'revision',
-      revisions: [...(p.revisions || []), tempRevision],
-      tasks: [...(p.tasks || []), ...tempTasks]
+      ...p, status: 'revision', revisions: [...(p.revisions || []), tempRevision], tasks: [...(p.tasks || []), ...tempTasks]
     }));
     
     try {
@@ -425,7 +610,6 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
         { project_id: projectId, text: `Submit ${data.type} Revision to client`, is_client_task: true }
       ]);
       
-      // Update with real IDs from database without full refresh
       if (result && result.revision && result.tasks) {
         setProjects(prev => prev.map(p => {
           if (p.id !== projectId) return p;
@@ -443,66 +627,51 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     } catch (e) { 
       console.error(e); 
       alert('Error adding revision'); 
-      // Revert on error
       setProjects(prev => prev.map(p => p.id !== projectId ? p : {
-        ...p,
-        revisions: p.revisions.filter(r => r.id !== tempId),
-        tasks: p.tasks.filter(t => !t.id.startsWith(tempId))
+        ...p, revisions: p.revisions.filter(r => r.id !== tempId), tasks: p.tasks.filter(t => !t.id.startsWith(tempId))
       }));
     }
   };
 
-  // Optimistic revision update
   const updateRevision = async (revisionId, data) => {
     setProjects(prev => prev.map(p => ({
-      ...p,
-      revisions: p.revisions?.map(r => r.id === revisionId ? { ...r, ...data } : r)
+      ...p, revisions: p.revisions?.map(r => r.id === revisionId ? { ...r, ...data } : r)
     })));
     try { await db.updateRevision(revisionId, data); } catch (e) { console.error(e); await refreshData(); }
   };
 
-  // Optimistic revision delete - also removes associated tasks
   const deleteRevision = async (revisionId) => {
     setProjects(prev => prev.map(p => ({
-      ...p,
-      revisions: p.revisions?.filter(r => r.id !== revisionId),
-      tasks: p.tasks?.filter(t => t.revision_id !== revisionId)
+      ...p, revisions: p.revisions?.filter(r => r.id !== revisionId), tasks: p.tasks?.filter(t => t.revision_id !== revisionId)
     })));
     try { await db.deleteRevision(revisionId); } catch (e) { console.error(e); await refreshData(); }
   };
 
-  // Optimistic client notes update
   const updateClientNotes = async (clientId, notes) => {
     setClients(prev => prev.map(c => c.id === clientId ? { ...c, notes } : c));
     try { await db.updateClient(clientId, { notes }); } catch (e) { console.error(e); await refreshData(); }
   };
 
-  // Optimistic project update
   const updateProject = async (projectId, updates) => {
     setProjects(prev => prev.map(p => p.id === projectId ? { ...p, ...updates } : p));
     try { await db.updateProject(projectId, updates); } catch (e) { console.error(e); await refreshData(); }
   };
 
-  // Optimistic project delete
   const deleteProject = async (projectId) => {
     setProjects(prev => prev.filter(p => p.id !== projectId));
     setExpanded(null);
     try { await db.deleteProject(projectId); } catch (e) { console.error(e); await refreshData(); }
   };
 
-  // Optimistic project create with double-tap prevention
   const createProject = async (projectData, tasks) => {
-    if (creatingProject) return; // Prevent double-tap
+    if (creatingProject) return;
     setCreatingProject(true);
     
     const tempId = 'temp-' + Date.now();
     const tempProject = {
-      id: tempId,
-      ...projectData,
-      status: 'progress',
+      id: tempId, ...projectData, status: 'progress',
       tasks: tasks.map((t, i) => ({ id: tempId + '-' + i, ...t, completed: false })),
-      revisions: [],
-      client: clients.find(c => c.id === projectData.client_id)
+      revisions: [], client: clients.find(c => c.id === projectData.client_id)
     };
     setProjects(prev => [tempProject, ...prev]);
     try {
@@ -584,8 +753,7 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                           </div>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">{clientTasks.map(t => {
                             const label = t.text.replace('Submit ', '').replace(' to client', '');
-                            const uploadKey = `${project.id}-${t.id}`;
-                            const progress = uploadProgress[uploadKey];
+                            const uploadProgress = getUploadProgress(project.id, t.id);
                             return (<div key={t.id} className={`p-3 rounded-lg border-2 ${t.sent ? 'bg-green-50 border-green-300' : t.file_url ? 'bg-yellow-50 border-yellow-300' : 'bg-white border-gray-200'}`}>
                               <div className="flex justify-between mb-2"><span className="font-medium text-sm">{label}</span>{t.sent && <span className="text-green-600 text-xs">✓ Sent</span>}{t.file_url && t.file_url !== 'uploading' && !t.sent && <span className="text-yellow-600 text-xs">Ready</span>}{t.file_url === 'uploading' && <span className="text-blue-600 text-xs">Uploading...</span>}</div>
                               {t.sent ? (
@@ -602,14 +770,14 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                                       <button onClick={() => removeFile(project.id, t.id, t.file_url)} className="text-xs text-red-500">Remove</button>
                                     </div>
                                   )}
-                                  {progress && (
+                                  {uploadProgress && (
                                     <div className="mt-2">
                                       <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-                                        <div className="h-full bg-purple-600 transition-all" style={{ width: `${progress.progress}%` }} />
+                                        <div className="h-full bg-purple-600 transition-all" style={{ width: `${uploadProgress.progress}%` }} />
                                       </div>
                                       <div className="flex justify-between text-xs text-gray-500 mt-1">
-                                        <span>{progress.progress}% {progress.totalFiles > 1 ? `(${progress.currentFile}/${progress.totalFiles})` : ''}</span>
-                                        <span>{progress.speed > 0 ? `${(progress.speed / 1024 / 1024).toFixed(1)} MB/s` : ''}</span>
+                                        <span>{uploadProgress.progress}%</span>
+                                        <span>{uploadProgress.speed > 0 ? `${formatBytes(uploadProgress.speed)}/s` : ''}</span>
                                       </div>
                                     </div>
                                   )}
@@ -758,13 +926,11 @@ function DatabaseModal({ tab, item, onClose, onSave }) {
     if (tab !== 'services' && !form.email?.trim()) { alert('Email required'); return; }
     const tasks = typeof form.tasks === 'string' ? form.tasks.split(',').map(t => t.trim()).filter(Boolean) : form.tasks;
     
-    // Build save object based on tab type
     if (tab === 'services') {
       onSave({ name: form.name, tasks });
     } else if (tab === 'editors') {
       onSave({ name: form.name, email: form.email, avatar: item?.avatar || '👤' });
     } else {
-      // Clients - include additional_emails
       onSave({ name: form.name, email: form.email, notes: form.notes, additional_emails: form.additional_emails || [] });
     }
   };
