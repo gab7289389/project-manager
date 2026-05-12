@@ -101,6 +101,8 @@ export const getProjects = async () => {
 };
 
 export const createProject = async (project, tasks) => {
+  console.log('createProject called with tasks:', tasks);
+  
   // Create project
   const { data: projectData, error: projectError } = await supabase
     .from('projects')
@@ -108,13 +110,25 @@ export const createProject = async (project, tasks) => {
     .select()
     .single();
   
-  if (projectError) throw projectError;
+  if (projectError) {
+    console.error('Project insert error:', projectError);
+    throw projectError;
+  }
+  
+  console.log('Project created:', projectData.id, 'Now inserting', tasks.length, 'tasks');
   
   // Create tasks
   if (tasks.length > 0) {
     const tasksWithProjectId = tasks.map(t => ({ ...t, project_id: projectData.id }));
+    console.log('Tasks to insert:', tasksWithProjectId);
     const { error: tasksError } = await supabase.from('tasks').insert(tasksWithProjectId);
-    if (tasksError) throw tasksError;
+    if (tasksError) {
+      console.error('Tasks insert error:', tasksError);
+      throw tasksError;
+    }
+    console.log('Tasks inserted successfully');
+  } else {
+    console.log('No tasks to insert!');
   }
   
   return projectData;
@@ -140,7 +154,6 @@ export const updateTask = async (id, updates) => {
 
 // REVISIONS
 export const createRevision = async (revision, tasks) => {
-  // Create revision
   const { data: revisionData, error: revisionError } = await supabase
     .from('revisions')
     .insert(revision)
@@ -149,7 +162,6 @@ export const createRevision = async (revision, tasks) => {
   
   if (revisionError) throw revisionError;
   
-  // Create associated tasks
   let createdTasks = [];
   if (tasks.length > 0) {
     const tasksWithIds = tasks.map(t => ({ ...t, revision_id: revisionData.id }));
@@ -219,7 +231,6 @@ export const uploadFile = async (projectId, file, onProgress) => {
       try {
         const base64Data = reader.result;
         
-        // Use Bunny CDN upload API
         const response = await fetch('/api/bunny-upload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
