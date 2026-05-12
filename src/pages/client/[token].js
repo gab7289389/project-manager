@@ -4,31 +4,31 @@ import Head from 'next/head';
 import { supabase } from '../../lib/supabase';
 import JSZip from 'jszip';
 
-// Download Button - uses API for native iOS download
+// Download Button - uses Bunny CDN's force download parameter
 function DownloadButton({ file }) {
-  const [clicked, setClicked] = useState(false);
+  const [status, setStatus] = useState('idle');
   
   const handleClick = () => {
-    setClicked(true);
-    setTimeout(() => setClicked(false), 3000);
+    setStatus('done');
+    setTimeout(() => setStatus('idle'), 3000);
   };
   
-  // Use our API endpoint to force download headers
-  const downloadUrl = `/api/download?url=${encodeURIComponent(file.url)}&name=${encodeURIComponent(file.name)}`;
+  // Bunny CDN supports ?download=1 to force Content-Disposition: attachment
+  const downloadUrl = file.url + (file.url.includes('?') ? '&' : '?') + 'download';
   
   return (
     <a
       href={downloadUrl}
       onClick={handleClick}
       className={`w-full flex items-center justify-between p-4 rounded-xl border-2 transition-all ${
-        clicked 
+        status === 'done' 
           ? 'bg-green-50 border-green-300' 
           : 'bg-white border-gray-200 hover:border-gray-300 active:bg-gray-50'
       }`}
     >
       <span className="text-sm text-gray-700 truncate flex-1 mr-4">{file.name}</span>
       <span className="text-sm font-semibold whitespace-nowrap">
-        {clicked 
+        {status === 'done' 
           ? <span className="text-green-600">✓ Downloading...</span>
           : <span className="text-black">Download ↓</span>
         }
