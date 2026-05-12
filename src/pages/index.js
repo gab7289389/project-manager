@@ -157,9 +157,57 @@ function UploadManager({ uploads, onCancel, onRetry, onClear }) {
   );
 }
 
-// Hook to manage upload queue
+// Hook to manage upload queue with persistence
 function useUploadManager(maxConcurrent = 2) {
   const [uploads, setUploads] = useState([]);
+  const [initialized, setInitialized] = useState(false);
+  
+  // Load from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('upload_manager_state');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // Restore non-complete uploads as 'interrupted' so user can see them
+        // We can't resume without the File object, but we show what was in progress
+        const restored = parsed
+          .filter(u => !['complete'].includes(u.status))
+          .map(u => ({
+            ...u,
+            status: 'error',
+            error: 'Upload interrupted - please re-upload',
+            file: null, // File objects can't be serialized
+          }));
+        if (restored.length > 0) {
+          setUploads(restored);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to restore uploads:', e);
+    }
+    setInitialized(true);
+  }, []);
+  
+  // Save to localStorage whenever uploads change
+  useEffect(() => {
+    if (!initialized) return;
+    try {
+      // Save minimal state (without File objects)
+      const toSave = uploads.map(u => ({
+        id: u.id,
+        fileName: u.fileName,
+        fileSize: u.fileSize,
+        projectId: u.projectId,
+        taskId: u.taskId,
+        status: u.status,
+        progress: u.progress,
+        error: u.error,
+      }));
+      localStorage.setItem('upload_manager_state', JSON.stringify(toSave));
+    } catch (e) {
+      console.error('Failed to save uploads:', e);
+    }
+  }, [uploads, initialized]);
   
   const addToQueue = useCallback((files, projectId, taskId = null) => {
     const newUploads = files.map(file => ({
@@ -185,7 +233,7 @@ function useUploadManager(maxConcurrent = 2) {
   // Process queue
   useEffect(() => {
     const active = uploads.filter(u => ['uploading', 'waiting', 'retrying', 'finalizing', 'checking'].includes(u.status));
-    const queued = uploads.filter(u => u.status === 'queued');
+    const queued = uploads.filter(u => u.status === 'queued' && u.file); // Must have file object
     
     if (active.length >= maxConcurrent || queued.length === 0) return;
     
@@ -223,9 +271,12 @@ function useUploadManager(maxConcurrent = 2) {
     });
   }, [uploads, maxConcurrent]);
   
+  // Cancel returns the upload info so caller can clean up task
   const cancelUpload = useCallback((id) => {
+    const upload = uploads.find(u => u.id === id);
     setUploads(prev => prev.filter(u => u.id !== id));
-  }, []);
+    return upload; // Return so caller can clear the task
+  }, [uploads]);
   
   const retryUpload = useCallback((id) => {
     setUploads(prev => prev.map(u => 
@@ -241,7 +292,12 @@ function useUploadManager(maxConcurrent = 2) {
     setUploads([]);
   }, []);
   
-  return { uploads, addToQueue, cancelUpload, retryUpload, clearCompleted, clearAll };
+  // Get uploads that need task cleanup (for cancelled/errored)
+  const getUploadsForCleanup = useCallback(() => {
+    return uploads.filter(u => u.status === 'error' && u.taskId);
+  }, [uploads]);
+  
+  return { uploads, addToQueue, cancelUpload, retryUpload, clearCompleted, clearAll, getUploadsForCleanup };
 }
 
 // =============================================
@@ -312,6 +368,18 @@ export default function App() {
   
   // Upload manager
   const { uploads, addToQueue, cancelUpload, retryUpload, clearCompleted, clearAll } = useUploadManager(2);
+  
+  // Handle cancel - also clear the task's file field
+  const handleCancelUpload = (id) => {
+    const upload = cancelUpload(id);
+    if (upload && upload.taskId && upload.projectId) {
+      // Clear the task's uploading state
+      setProjects(prev => prev.map(p => p.id !== upload.projectId ? p : {
+        ...p,
+        tasks: p.tasks.map(t => t.id === upload.taskId ? { ...t, file_name: null, file_url: null } : t)
+      }));
+    }
+  };
 
   useEffect(() => {
     const auth = localStorage.getItem('pm_authenticated');
@@ -388,7 +456,7 @@ export default function App() {
       {/* Upload Manager - Google Drive style */}
       <UploadManager 
         uploads={uploads}
-        onCancel={cancelUpload}
+        onCancel={handleCancelUpload}
         onRetry={retryUpload}
         onClear={clearAll}
       />
