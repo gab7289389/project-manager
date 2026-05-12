@@ -4,6 +4,70 @@ import Head from 'next/head';
 import { supabase } from '../../lib/supabase';
 import JSZip from 'jszip';
 
+// Download Button with progress
+function DownloadButton({ file }) {
+  const [status, setStatus] = useState('idle'); // idle, downloading, done, error
+  const [progress, setProgress] = useState(0);
+  
+  const handleDownload = async () => {
+    setStatus('downloading');
+    setProgress(0);
+    
+    try {
+      const response = await fetch(file.url);
+      const contentLength = response.headers.get('content-length');
+      const total = parseInt(contentLength, 10);
+      let loaded = 0;
+      
+      const reader = response.body.getReader();
+      const chunks = [];
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        loaded += value.length;
+        if (total) {
+          setProgress(Math.round((loaded / total) * 100));
+        }
+      }
+      
+      const blob = new Blob(chunks);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      setStatus('done');
+      setTimeout(() => setStatus('idle'), 2000);
+    } catch (e) {
+      console.error('Download failed:', e);
+      setStatus('error');
+      setTimeout(() => setStatus('idle'), 2000);
+    }
+  };
+  
+  return (
+    <button
+      onClick={handleDownload}
+      disabled={status === 'downloading'}
+      className="w-full flex items-center justify-between p-3 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors disabled:opacity-70"
+    >
+      <span className="text-sm text-gray-700 truncate flex-1 mr-4 text-left">{file.name}</span>
+      <span className="text-sm font-medium whitespace-nowrap">
+        {status === 'idle' && <span className="text-gray-900">↓ Download</span>}
+        {status === 'downloading' && <span className="text-blue-600">{progress}%</span>}
+        {status === 'done' && <span className="text-green-600">✓ Done</span>}
+        {status === 'error' && <span className="text-red-600">✗ Failed</span>}
+      </span>
+    </button>
+  );
+}
+
 // Project Card Component
 function ProjectCard({ project, expanded, onToggle }) {
   const [downloading, setDownloading] = useState(false);
@@ -101,15 +165,7 @@ function ProjectCard({ project, expanded, onToggle }) {
                   <p className="font-medium text-gray-900 mb-3">{label}</p>
                   <div className="space-y-2">
                     {files.map((file, idx) => (
-                      <a
-                        key={idx}
-                        href={file.url}
-                        download={file.name}
-                        className="flex items-center justify-between p-3 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors"
-                      >
-                        <span className="text-sm text-gray-700 truncate flex-1 mr-4">{file.name}</span>
-                        <span className="text-sm text-gray-900 font-medium whitespace-nowrap">↓ Download</span>
-                      </a>
+                      <DownloadButton key={idx} file={file} />
                     ))}
                   </div>
                 </div>
