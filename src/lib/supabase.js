@@ -103,7 +103,6 @@ export const getProjects = async () => {
 export const createProject = async (project, tasks) => {
   console.log('createProject called with tasks:', tasks);
   
-  // Create project
   const { data: projectData, error: projectError } = await supabase
     .from('projects')
     .insert(project)
@@ -117,7 +116,6 @@ export const createProject = async (project, tasks) => {
   
   console.log('Project created:', projectData.id, 'Now inserting', tasks.length, 'tasks');
   
-  // Create tasks
   if (tasks.length > 0) {
     const tasksWithProjectId = tasks.map(t => ({ ...t, project_id: projectData.id }));
     console.log('Tasks to insert:', tasksWithProjectId);
@@ -188,13 +186,14 @@ export const deleteRevision = async (id) => {
 };
 
 // MAGIC LINKS
-export const createMagicLink = async (projectId, clientId, taskIds) => {
+export const createMagicLink = async (projectId, clientId, taskIds, pendingTaskIds = []) => {
   const { data, error } = await supabase
     .from('magic_links')
     .insert({
       project_id: projectId,
       client_id: clientId,
-      task_ids: taskIds
+      task_ids: taskIds,
+      pending_task_ids: pendingTaskIds
     })
     .select()
     .single();
@@ -218,47 +217,62 @@ export const markMagicLinkAccessed = async (token) => {
 };
 
 // =============================================
-// FILE STORAGE - Uses Bunny CDN
+// FILE STORAGE - Uses Bunny CDN with progress
 // =============================================
 
 export const uploadFile = async (projectId, file, onProgress) => {
-  const fileName = `${projectId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+  // Sanitize filename
+  const safeFileName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+  const fileName = `${projectId}/${Date.now()}-${safeFileName}`;
   
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
+    const xhr = new XMLHttpRequest();
+    const startTime = Date.now();
+    let lastLoaded = 0;
+    let lastTime = startTime;
+    let currentSpeed = 0;
     
-    reader.onload = async () => {
-      try {
-        const base64Data = reader.result;
+    // Progress tracking
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable && onProgress) {
+        const percent = Math.round((e.loaded / e.total) * 100);
+        const now = Date.now();
+        const timeDiff = (now - lastTime) / 1000;
         
-        const response = await fetch('/api/bunny-upload', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fileName,
-            fileData: base64Data,
-            folder: 'uploads'
-          })
-        });
-        
-        if (!response.ok) {
-          const error = await response.json();
-          throw new Error(error.error || 'Upload failed');
+        if (timeDiff >= 0.2) {
+          const bytesDiff = e.loaded - lastLoaded;
+          currentSpeed = bytesDiff / timeDiff;
+          lastLoaded = e.loaded;
+          lastTime = now;
         }
         
-        const result = await response.json();
+        const remaining = e.total - e.loaded;
+        const eta = currentSpeed > 0 ? remaining / currentSpeed : 0;
+        
+        onProgress(percent, currentSpeed, eta);
+      }
+    });
+    
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        // Construct the public URL
+        const publicUrl = `https://dxtr-staging.b-cdn.net/uploads/${fileName}`;
         resolve({
           fileName: file.name,
-          fileUrl: result.url
+          fileUrl: publicUrl
         });
-        
-      } catch (error) {
-        reject(error);
+      } else {
+        reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
       }
-    };
+    });
     
-    reader.onerror = () => reject(new Error('Failed to read file'));
-    reader.readAsDataURL(file);
+    xhr.addEventListener('error', () => reject(new Error('Upload failed - network error')));
+    xhr.addEventListener('abort', () => reject(new Error('Upload aborted')));
+    
+    // Upload directly to Bunny CDN via the API route (which will proxy to Bunny)
+    xhr.open('POST', '/api/bunny-upload-stream');
+    xhr.setRequestHeader('X-File-Name', encodeURIComponent(fileName));
+    xhr.send(file);
   });
 };
 
