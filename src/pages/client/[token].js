@@ -4,80 +4,36 @@ import Head from 'next/head';
 import { supabase } from '../../lib/supabase';
 import JSZip from 'jszip';
 
-// Download Button with progress
+// Download Button - uses API for native iOS download
 function DownloadButton({ file }) {
-  const [status, setStatus] = useState('idle'); // idle, downloading, done, error
-  const [progress, setProgress] = useState(0);
+  const [clicked, setClicked] = useState(false);
   
-  const handleDownload = async () => {
-    setStatus('downloading');
-    setProgress(0);
-    
-    try {
-      const response = await fetch(file.url);
-      const contentLength = response.headers.get('content-length');
-      const total = parseInt(contentLength, 10);
-      let loaded = 0;
-      
-      const reader = response.body.getReader();
-      const chunks = [];
-      
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        loaded += value.length;
-        if (total) {
-          setProgress(Math.round((loaded / total) * 100));
-        }
-      }
-      
-      const blob = new Blob(chunks);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = file.name;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      
-      setStatus('done');
-      setTimeout(() => setStatus('idle'), 3000);
-    } catch (e) {
-      console.error('Download failed:', e);
-      setStatus('error');
-      setTimeout(() => setStatus('idle'), 3000);
-    }
+  const handleClick = () => {
+    setClicked(true);
+    setTimeout(() => setClicked(false), 3000);
   };
   
+  // Use our API endpoint to force download headers
+  const downloadUrl = `/api/download?url=${encodeURIComponent(file.url)}&name=${encodeURIComponent(file.name)}`;
+  
   return (
-    <div className="relative">
-      <button
-        onClick={handleDownload}
-        disabled={status === 'downloading'}
-        className={`w-full flex items-center justify-between p-4 rounded-xl border-2 transition-all ${
-          status === 'done' 
-            ? 'bg-green-50 border-green-300' 
-            : status === 'error'
-            ? 'bg-red-50 border-red-300'
-            : status === 'downloading'
-            ? 'bg-blue-50 border-blue-300'
-            : 'bg-white border-gray-200 hover:border-gray-300 active:bg-gray-50'
-        }`}
-      >
-        <span className="text-sm text-gray-700 truncate flex-1 mr-4 text-left">{file.name}</span>
-        <span className="text-sm font-semibold whitespace-nowrap">
-          {status === 'idle' && <span className="text-black">Download ↓</span>}
-          {status === 'downloading' && <span className="text-blue-600">Downloading {progress}%</span>}
-          {status === 'done' && <span className="text-green-600">✓ Saved to Downloads</span>}
-          {status === 'error' && <span className="text-red-600">Failed - Tap to retry</span>}
-        </span>
-      </button>
-      {status === 'downloading' && (
-        <div className="absolute bottom-0 left-0 h-1 bg-blue-500 rounded-b-xl transition-all" style={{ width: `${progress}%` }} />
-      )}
-    </div>
+    <a
+      href={downloadUrl}
+      onClick={handleClick}
+      className={`w-full flex items-center justify-between p-4 rounded-xl border-2 transition-all ${
+        clicked 
+          ? 'bg-green-50 border-green-300' 
+          : 'bg-white border-gray-200 hover:border-gray-300 active:bg-gray-50'
+      }`}
+    >
+      <span className="text-sm text-gray-700 truncate flex-1 mr-4">{file.name}</span>
+      <span className="text-sm font-semibold whitespace-nowrap">
+        {clicked 
+          ? <span className="text-green-600">✓ Downloading...</span>
+          : <span className="text-black">Download ↓</span>
+        }
+      </span>
+    </a>
   );
 }
 
