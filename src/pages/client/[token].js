@@ -43,28 +43,41 @@ function DownloadButton({ file }) {
       URL.revokeObjectURL(url);
       
       setStatus('done');
-      setTimeout(() => setStatus('idle'), 2000);
+      setTimeout(() => setStatus('idle'), 3000);
     } catch (e) {
       console.error('Download failed:', e);
       setStatus('error');
-      setTimeout(() => setStatus('idle'), 2000);
+      setTimeout(() => setStatus('idle'), 3000);
     }
   };
   
   return (
-    <button
-      onClick={handleDownload}
-      disabled={status === 'downloading'}
-      className="w-full flex items-center justify-between p-3 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors disabled:opacity-70"
-    >
-      <span className="text-sm text-gray-700 truncate flex-1 mr-4 text-left">{file.name}</span>
-      <span className="text-sm font-medium whitespace-nowrap">
-        {status === 'idle' && <span className="text-gray-900">↓ Download</span>}
-        {status === 'downloading' && <span className="text-blue-600">{progress}%</span>}
-        {status === 'done' && <span className="text-green-600">✓ Done</span>}
-        {status === 'error' && <span className="text-red-600">✗ Failed</span>}
-      </span>
-    </button>
+    <div className="relative">
+      <button
+        onClick={handleDownload}
+        disabled={status === 'downloading'}
+        className={`w-full flex items-center justify-between p-4 rounded-xl border-2 transition-all ${
+          status === 'done' 
+            ? 'bg-green-50 border-green-300' 
+            : status === 'error'
+            ? 'bg-red-50 border-red-300'
+            : status === 'downloading'
+            ? 'bg-blue-50 border-blue-300'
+            : 'bg-white border-gray-200 hover:border-gray-300 active:bg-gray-50'
+        }`}
+      >
+        <span className="text-sm text-gray-700 truncate flex-1 mr-4 text-left">{file.name}</span>
+        <span className="text-sm font-semibold whitespace-nowrap">
+          {status === 'idle' && <span className="text-black">Download ↓</span>}
+          {status === 'downloading' && <span className="text-blue-600">Downloading {progress}%</span>}
+          {status === 'done' && <span className="text-green-600">✓ Saved to Downloads</span>}
+          {status === 'error' && <span className="text-red-600">Failed - Tap to retry</span>}
+        </span>
+      </button>
+      {status === 'downloading' && (
+        <div className="absolute bottom-0 left-0 h-1 bg-blue-500 rounded-b-xl transition-all" style={{ width: `${progress}%` }} />
+      )}
+    </div>
   );
 }
 
