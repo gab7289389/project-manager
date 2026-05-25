@@ -659,17 +659,3 @@ export const deleteFile = async (fileUrl) => {
 // Legacy exports
 export function getPendingUploads() { return []; }
 export function clearPendingUpload() {}
-
-export const deleteFile = async (fileUrl) => {
-  if (!UPLOAD_SERVER_URL) return;
-  
-  try {
-    await fetch(`${UPLOAD_SERVER_URL}/delete`, {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filePath: fileUrl }),
-    });
-  } catch (error) {
-    console.error('Delete error:', error);
-  }
-};
