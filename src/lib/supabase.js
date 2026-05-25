@@ -223,11 +223,11 @@ export const markMagicLinkAccessed = async (token) => {
 // FILE STORAGE - Robust resumable uploads
 // =============================================
 
-const CHUNK_SIZE = 50 * 1024 * 1024; // 50MB chunks for faster throughput
-const SMALL_FILE_THRESHOLD = 50 * 1024 * 1024;
+const CHUNK_SIZE = 100 * 1024 * 1024; // 100MB chunks for max throughput
+const SMALL_FILE_THRESHOLD = 100 * 1024 * 1024;
 const MAX_RETRIES = 10;
 const RETRY_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000, 30000, 30000, 30000, 30000];
-const PARALLEL_CHUNKS = 3; // Upload 3 chunks simultaneously
+const PARALLEL_CHUNKS = 6; // Upload 6 chunks simultaneously
 
 // Wait for network to come back online
 function waitForOnline() {
