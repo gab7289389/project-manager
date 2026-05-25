@@ -223,11 +223,8 @@ export const markMagicLinkAccessed = async (token) => {
 // FILE STORAGE - Robust resumable uploads
 // =============================================
 
-const CHUNK_SIZE = 25 * 1024 * 1024; // 25MB chunks - balance of speed and reliability
-const SMALL_FILE_THRESHOLD = 25 * 1024 * 1024;
 const MAX_RETRIES = 10;
 const RETRY_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000, 30000, 30000, 30000, 30000];
-const PARALLEL_CHUNKS = 5; // Upload 5 chunks simultaneously
 
 // Wait for network to come back online
 function waitForOnline() {
@@ -247,162 +244,7 @@ function waitForOnline() {
 // Sleep helper
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// Generate unique upload ID
-function generateUploadId(file, projectId) {
-  return `${projectId}_${file.name}_${file.size}_${file.lastModified}`.replace(/[^a-zA-Z0-9_]/g, '_');
-}
-
-// LocalStorage helpers for upload state
-function getUploadState(uploadId) {
-  try {
-    const data = localStorage.getItem(`upload_${uploadId}`);
-    return data ? JSON.parse(data) : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveUploadState(uploadId, state) {
-  try {
-    localStorage.setItem(`upload_${uploadId}`, JSON.stringify(state));
-  } catch {}
-}
-
-function clearUploadState(uploadId) {
-  try {
-    localStorage.removeItem(`upload_${uploadId}`);
-  } catch {}
-}
-
-// Get all pending uploads (for resume UI)
-export function getPendingUploads() {
-  const pending = [];
-  try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key?.startsWith('upload_')) {
-        const data = JSON.parse(localStorage.getItem(key));
-        if (data && data.fileName && data.totalChunks) {
-          pending.push({
-            uploadId: key.replace('upload_', ''),
-            ...data,
-            progress: Math.round((data.uploadedChunks?.length || 0) / data.totalChunks * 100)
-          });
-        }
-      }
-    }
-  } catch {}
-  return pending;
-}
-
-// Clear a specific pending upload
-export function clearPendingUpload(uploadId) {
-  clearUploadState(uploadId);
-}
-
-// Upload chunk with XHR + network resilience
-function uploadChunkWithRetry(uploadId, fileName, chunkIndex, totalChunks, chunkBlob, onProgress, onStatusChange) {
-  return new Promise(async (resolve, reject) => {
-    let retries = 0;
-    
-    while (retries < MAX_RETRIES) {
-      // Wait for online if offline
-      if (!navigator.onLine) {
-        onStatusChange?.('waiting', 'Waiting for connection...');
-        await waitForOnline();
-        onStatusChange?.('uploading', 'Connection restored, resuming...');
-        await sleep(1000); // Brief pause after reconnect
-      }
-      
-      try {
-        const result = await new Promise((res, rej) => {
-          const xhr = new XMLHttpRequest();
-          
-          xhr.upload.addEventListener('progress', (e) => {
-            if (e.lengthComputable && onProgress) {
-              onProgress(chunkIndex, e.loaded, e.total);
-            }
-          });
-          
-          xhr.addEventListener('load', () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              try {
-                res(JSON.parse(xhr.responseText));
-              } catch {
-                res({ success: true });
-              }
-            } else {
-              rej(new Error(`HTTP ${xhr.status}`));
-            }
-          });
-          
-          xhr.addEventListener('error', () => rej(new Error('Network error')));
-          xhr.addEventListener('abort', () => rej(new Error('Aborted')));
-          xhr.addEventListener('timeout', () => rej(new Error('Timeout')));
-          
-          xhr.timeout = 120000; // 2 minute timeout per chunk
-          
-          xhr.open('POST', `${UPLOAD_SERVER_URL}/upload-chunk`);
-          xhr.setRequestHeader('X-Upload-Id', uploadId);
-          xhr.setRequestHeader('X-File-Name', encodeURIComponent(fileName));
-          xhr.setRequestHeader('X-Chunk-Index', chunkIndex.toString());
-          xhr.setRequestHeader('X-Total-Chunks', totalChunks.toString());
-          xhr.send(chunkBlob);
-        });
-        
-        resolve(result);
-        return;
-        
-      } catch (error) {
-        retries++;
-        const delay = RETRY_DELAYS[Math.min(retries - 1, RETRY_DELAYS.length - 1)];
-        
-        console.log(`Chunk ${chunkIndex} failed (attempt ${retries}/${MAX_RETRIES}): ${error.message}`);
-        
-        if (retries >= MAX_RETRIES) {
-          reject(new Error(`Failed after ${MAX_RETRIES} attempts: ${error.message}`));
-          return;
-        }
-        
-        onStatusChange?.('retrying', `Retry ${retries}/${MAX_RETRIES} in ${delay/1000}s...`);
-        await sleep(delay);
-        onStatusChange?.('uploading', 'Retrying...');
-      }
-    }
-  });
-}
-
-// Check uploaded chunks on server
-async function checkUploadedChunks(uploadId, totalChunks) {
-  try {
-    const response = await fetch(
-      `${UPLOAD_SERVER_URL}/check-chunks?uploadId=${uploadId}&totalChunks=${totalChunks}`
-    );
-    if (!response.ok) return [];
-    const data = await response.json();
-    return data.uploadedChunks || [];
-  } catch {
-    return [];
-  }
-}
-
-// Finalize upload
-async function finalizeUpload(uploadId, fileName, totalChunks) {
-  const response = await fetch(`${UPLOAD_SERVER_URL}/finalize-upload`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ uploadId, fileName, totalChunks }),
-  });
-  
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.error || 'Finalize failed');
-  }
-  
-  return response.json();
-}
-
-// Main upload function
+// Main upload function - direct upload with progress
 export const uploadFile = async (projectId, file, onProgress, onStatusChange) => {
   const safeFileName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
   const fileName = `${projectId}/${Date.now()}-${safeFileName}`;
@@ -411,170 +253,6 @@ export const uploadFile = async (projectId, file, onProgress, onStatusChange) =>
     throw new Error('Upload server not configured');
   }
   
-  // Small files - simple upload with retry
-  if (file.size <= SMALL_FILE_THRESHOLD) {
-    return uploadSmallFile(fileName, file, onProgress, onStatusChange);
-  }
-  
-  // Large files - chunked upload
-  const uploadId = generateUploadId(file, projectId);
-  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-  
-  // Check for existing progress
-  let completedChunks = new Set();
-  const savedState = getUploadState(uploadId);
-  
-  if (savedState && savedState.fileName === fileName) {
-    // Verify chunks on server
-    onStatusChange?.('checking', 'Checking previous progress...');
-    const serverChunks = await checkUploadedChunks(uploadId, totalChunks);
-    completedChunks = new Set(serverChunks);
-    
-    if (completedChunks.size > 0) {
-      console.log(`Resuming: ${completedChunks.size}/${totalChunks} chunks`);
-      onStatusChange?.('resuming', `Resuming from ${Math.round(completedChunks.size/totalChunks*100)}%`);
-    }
-  }
-  
-  // Save initial state
-  saveUploadState(uploadId, {
-    fileName,
-    originalName: file.name,
-    fileSize: file.size,
-    totalChunks,
-    uploadedChunks: Array.from(completedChunks),
-    projectId,
-    startedAt: savedState?.startedAt || Date.now(),
-  });
-  
-  // Progress tracking
-  const chunkProgress = new Map();
-  let lastTime = Date.now();
-  let lastBytes = completedChunks.size * CHUNK_SIZE;
-  let speedSamples = [];
-  
-  // Initialize completed chunks
-  for (const idx of completedChunks) {
-    const size = idx === totalChunks - 1 ? file.size - (idx * CHUNK_SIZE) : CHUNK_SIZE;
-    chunkProgress.set(idx, size);
-  }
-  
-  const onChunkProgress = (chunkIndex, loaded, total) => {
-    chunkProgress.set(chunkIndex, loaded);
-    
-    let totalBytes = 0;
-    for (const bytes of chunkProgress.values()) {
-      totalBytes += bytes;
-    }
-    
-    // Smooth speed calculation
-    const now = Date.now();
-    const timeDiff = (now - lastTime) / 1000;
-    if (timeDiff >= 0.2) {
-      const instantSpeed = (totalBytes - lastBytes) / timeDiff;
-      speedSamples.push(instantSpeed);
-      if (speedSamples.length > 10) speedSamples.shift();
-      lastBytes = totalBytes;
-      lastTime = now;
-    }
-    
-    const avgSpeed = speedSamples.length > 0 
-      ? speedSamples.reduce((a, b) => a + b, 0) / speedSamples.length 
-      : 0;
-    
-    if (onProgress) {
-      const percent = Math.round((totalBytes / file.size) * 100);
-      const remaining = file.size - totalBytes;
-      const eta = avgSpeed > 0 ? remaining / avgSpeed : 0;
-      onProgress(Math.min(percent, 99), avgSpeed, eta);
-    }
-  };
-  
-  // Get remaining chunks
-  const remainingChunks = [];
-  for (let i = 0; i < totalChunks; i++) {
-    if (!completedChunks.has(i)) {
-      remainingChunks.push(i);
-    }
-  }
-  
-  // Initial progress report
-  if (completedChunks.size > 0 && onProgress) {
-    const bytes = completedChunks.size * CHUNK_SIZE;
-    onProgress(Math.min(Math.round(bytes / file.size * 100), 99), 0, 0);
-  }
-  
-  onStatusChange?.('uploading', 'Uploading...');
-  
-  // Upload remaining chunks in parallel
-  const uploadQueue = [...remainingChunks];
-  const inProgress = new Set();
-  
-  const uploadNextChunk = async () => {
-    while (uploadQueue.length > 0 || inProgress.size > 0) {
-      // Start new uploads if we have capacity
-      while (uploadQueue.length > 0 && inProgress.size < PARALLEL_CHUNKS) {
-        const chunkIndex = uploadQueue.shift();
-        inProgress.add(chunkIndex);
-        
-        const start = chunkIndex * CHUNK_SIZE;
-        const end = Math.min(start + CHUNK_SIZE, file.size);
-        const chunk = file.slice(start, end);
-        
-        (async () => {
-          try {
-            await uploadChunkWithRetry(
-              uploadId, fileName, chunkIndex, totalChunks, chunk,
-              onChunkProgress, onStatusChange
-            );
-            
-            completedChunks.add(chunkIndex);
-            chunkProgress.set(chunkIndex, end - start);
-            
-            // Save progress after each chunk
-            saveUploadState(uploadId, {
-              fileName,
-              originalName: file.name,
-              fileSize: file.size,
-              totalChunks,
-              uploadedChunks: Array.from(completedChunks),
-              projectId,
-              startedAt: savedState?.startedAt || Date.now(),
-            });
-          } finally {
-            inProgress.delete(chunkIndex);
-          }
-        })();
-      }
-      
-      // Wait a bit before checking again
-      if (uploadQueue.length > 0 || inProgress.size > 0) {
-        await sleep(100);
-      }
-    }
-  };
-  
-  await uploadNextChunk();
-  
-  // Finalize
-  onStatusChange?.('finalizing', 'Combining chunks...');
-  onProgress?.(99, 0, 1);
-  
-  const result = await finalizeUpload(uploadId, fileName, totalChunks);
-  
-  clearUploadState(uploadId);
-  
-  onProgress?.(100, 0, 0);
-  onStatusChange?.('complete', 'Upload complete');
-  
-  return {
-    fileName: file.name,
-    fileUrl: result.url,
-  };
-};
-
-// Small file upload with retry
-async function uploadSmallFile(fileName, file, onProgress, onStatusChange) {
   let retries = 0;
   
   while (retries < MAX_RETRIES) {
@@ -585,6 +263,8 @@ async function uploadSmallFile(fileName, file, onProgress, onStatusChange) {
     }
     
     try {
+      onStatusChange?.('uploading', 'Uploading...');
+      
       return await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         let lastLoaded = 0;
@@ -599,7 +279,7 @@ async function uploadSmallFile(fileName, file, onProgress, onStatusChange) {
             if (timeDiff >= 0.2) {
               const speed = (e.loaded - lastLoaded) / timeDiff;
               speedSamples.push(speed);
-              if (speedSamples.length > 5) speedSamples.shift();
+              if (speedSamples.length > 10) speedSamples.shift();
               lastLoaded = e.loaded;
               lastTime = now;
             }
@@ -619,6 +299,8 @@ async function uploadSmallFile(fileName, file, onProgress, onStatusChange) {
           if (xhr.status >= 200 && xhr.status < 300) {
             try {
               const result = JSON.parse(xhr.responseText);
+              onProgress?.(100, 0, 0);
+              onStatusChange?.('complete', 'Upload complete');
               resolve({ fileName: file.name, fileUrl: result.url });
             } catch {
               reject(new Error('Invalid response'));
@@ -629,7 +311,11 @@ async function uploadSmallFile(fileName, file, onProgress, onStatusChange) {
         });
         
         xhr.addEventListener('error', () => reject(new Error('Network error')));
-        xhr.timeout = 120000;
+        xhr.addEventListener('abort', () => reject(new Error('Aborted')));
+        xhr.addEventListener('timeout', () => reject(new Error('Timeout')));
+        
+        // No timeout - let large files take as long as needed
+        xhr.timeout = 0;
         
         xhr.open('POST', `${UPLOAD_SERVER_URL}/upload`);
         xhr.setRequestHeader('X-File-Name', encodeURIComponent(fileName));
@@ -645,20 +331,12 @@ async function uploadSmallFile(fileName, file, onProgress, onStatusChange) {
       await sleep(delay);
     }
   }
-}
-
-// Resume a pending upload (call from UI)
-export const resumeUpload = async (uploadId, file, onProgress, onStatusChange) => {
-  const state = getUploadState(uploadId);
-  if (!state) throw new Error('No upload to resume');
-  
-  // Verify file matches
-  if (file.name !== state.originalName || file.size !== state.fileSize) {
-    throw new Error('File does not match pending upload');
-  }
-  
-  return uploadFile(state.projectId, file, onProgress, onStatusChange);
 };
+
+// Legacy functions for compatibility
+export function getPendingUploads() { return []; }
+export function clearPendingUpload() {}
+export const resumeUpload = async () => { throw new Error('Resume not supported'); };
 
 export const deleteFile = async (fileUrl) => {
   if (!UPLOAD_SERVER_URL) return;
