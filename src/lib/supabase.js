@@ -223,10 +223,11 @@ export const markMagicLinkAccessed = async (token) => {
 // FILE STORAGE - Robust resumable uploads
 // =============================================
 
-const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB chunks
-const SMALL_FILE_THRESHOLD = 10 * 1024 * 1024;
+const CHUNK_SIZE = 50 * 1024 * 1024; // 50MB chunks for faster throughput
+const SMALL_FILE_THRESHOLD = 50 * 1024 * 1024;
 const MAX_RETRIES = 10;
-const RETRY_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000, 30000, 30000, 30000, 30000]; // Exponential backoff
+const RETRY_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000, 30000, 30000, 30000, 30000];
+const PARALLEL_CHUNKS = 3; // Upload 3 chunks simultaneously
 
 // Wait for network to come back online
 function waitForOnline() {
@@ -505,31 +506,55 @@ export const uploadFile = async (projectId, file, onProgress, onStatusChange) =>
   
   onStatusChange?.('uploading', 'Uploading...');
   
-  // Upload remaining chunks
-  for (const chunkIndex of remainingChunks) {
-    const start = chunkIndex * CHUNK_SIZE;
-    const end = Math.min(start + CHUNK_SIZE, file.size);
-    const chunk = file.slice(start, end);
-    
-    await uploadChunkWithRetry(
-      uploadId, fileName, chunkIndex, totalChunks, chunk,
-      onChunkProgress, onStatusChange
-    );
-    
-    completedChunks.add(chunkIndex);
-    chunkProgress.set(chunkIndex, end - start);
-    
-    // Save progress after each chunk
-    saveUploadState(uploadId, {
-      fileName,
-      originalName: file.name,
-      fileSize: file.size,
-      totalChunks,
-      uploadedChunks: Array.from(completedChunks),
-      projectId,
-      startedAt: savedState?.startedAt || Date.now(),
-    });
-  }
+  // Upload remaining chunks in parallel
+  const uploadQueue = [...remainingChunks];
+  const inProgress = new Set();
+  
+  const uploadNextChunk = async () => {
+    while (uploadQueue.length > 0 || inProgress.size > 0) {
+      // Start new uploads if we have capacity
+      while (uploadQueue.length > 0 && inProgress.size < PARALLEL_CHUNKS) {
+        const chunkIndex = uploadQueue.shift();
+        inProgress.add(chunkIndex);
+        
+        const start = chunkIndex * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, file.size);
+        const chunk = file.slice(start, end);
+        
+        (async () => {
+          try {
+            await uploadChunkWithRetry(
+              uploadId, fileName, chunkIndex, totalChunks, chunk,
+              onChunkProgress, onStatusChange
+            );
+            
+            completedChunks.add(chunkIndex);
+            chunkProgress.set(chunkIndex, end - start);
+            
+            // Save progress after each chunk
+            saveUploadState(uploadId, {
+              fileName,
+              originalName: file.name,
+              fileSize: file.size,
+              totalChunks,
+              uploadedChunks: Array.from(completedChunks),
+              projectId,
+              startedAt: savedState?.startedAt || Date.now(),
+            });
+          } finally {
+            inProgress.delete(chunkIndex);
+          }
+        })();
+      }
+      
+      // Wait a bit before checking again
+      if (uploadQueue.length > 0 || inProgress.size > 0) {
+        await sleep(100);
+      }
+    }
+  };
+  
+  await uploadNextChunk();
   
   // Finalize
   onStatusChange?.('finalizing', 'Combining chunks...');
