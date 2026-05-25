@@ -4,36 +4,214 @@ import Head from 'next/head';
 import { supabase } from '../../lib/supabase';
 import JSZip from 'jszip';
 
-// Download Button - uses Bunny CDN's force download parameter
+// Check if URL is a chunked file
+function isChunkedFile(fileUrl) {
+  return fileUrl && fileUrl.includes('#chunks=');
+}
+
+// Download and combine chunks on client side
+async function downloadChunkedFile(fileUrl, onProgress) {
+  const url = new URL(fileUrl);
+  const hash = url.hash.slice(1);
+  const params = new URLSearchParams(hash);
+  
+  const totalChunks = parseInt(params.get('chunks'));
+  const fileSize = parseInt(params.get('size'));
+  const fileName = decodeURIComponent(params.get('name'));
+  const basePath = url.origin + url.pathname;
+  
+  const chunks = new Array(totalChunks);
+  let downloadedBytes = 0;
+  let lastTime = Date.now();
+  let lastBytes = 0;
+  let speedSamples = [];
+  
+  const PARALLEL_DOWNLOADS = 6;
+  const downloadQueue = Array.from({ length: totalChunks }, (_, i) => i);
+  const activeDownloads = new Set();
+  
+  await new Promise((resolve, reject) => {
+    const processQueue = async () => {
+      while (downloadQueue.length > 0 || activeDownloads.size > 0) {
+        while (downloadQueue.length > 0 && activeDownloads.size < PARALLEL_DOWNLOADS) {
+          const chunkIndex = downloadQueue.shift();
+          activeDownloads.add(chunkIndex);
+          
+          (async () => {
+            try {
+              const chunkUrl = `${basePath}.chunk${chunkIndex}`;
+              const response = await fetch(chunkUrl);
+              if (!response.ok) throw new Error(`HTTP ${response.status}`);
+              
+              const blob = await response.blob();
+              chunks[chunkIndex] = blob;
+              downloadedBytes += blob.size;
+              
+              // Update progress
+              const now = Date.now();
+              const timeDiff = (now - lastTime) / 1000;
+              if (timeDiff >= 0.2) {
+                const speed = (downloadedBytes - lastBytes) / timeDiff;
+                speedSamples.push(speed);
+                if (speedSamples.length > 10) speedSamples.shift();
+                lastBytes = downloadedBytes;
+                lastTime = now;
+              }
+              const avgSpeed = speedSamples.length > 0 
+                ? speedSamples.reduce((a, b) => a + b, 0) / speedSamples.length : 0;
+              const percent = Math.round((downloadedBytes / fileSize) * 100);
+              onProgress?.(percent, avgSpeed);
+              
+            } catch (error) {
+              // Retry once
+              try {
+                const chunkUrl = `${basePath}.chunk${chunkIndex}`;
+                const response = await fetch(chunkUrl);
+                const blob = await response.blob();
+                chunks[chunkIndex] = blob;
+                downloadedBytes += blob.size;
+              } catch (e) {
+                reject(new Error(`Failed to download chunk ${chunkIndex}`));
+                return;
+              }
+            } finally {
+              activeDownloads.delete(chunkIndex);
+            }
+          })();
+        }
+        await new Promise(r => setTimeout(r, 50));
+      }
+      resolve();
+    };
+    processQueue();
+  });
+  
+  // Combine chunks
+  const combinedBlob = new Blob(chunks, { type: 'application/octet-stream' });
+  
+  // Trigger download
+  const downloadUrl = URL.createObjectURL(combinedBlob);
+  const a = document.createElement('a');
+  a.href = downloadUrl;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(downloadUrl);
+  
+  return { success: true };
+}
+
+// Download Button
 function DownloadButton({ file }) {
   const [status, setStatus] = useState('idle');
+  const [progress, setProgress] = useState(0);
+  const [speed, setSpeed] = useState(0);
+  const [showPopup, setShowPopup] = useState(false);
   
-  const handleClick = () => {
-    setStatus('done');
-    setTimeout(() => setStatus('idle'), 3000);
+  const isChunked = isChunkedFile(file.url);
+  const isMobile = typeof window !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  
+  const handleClick = async () => {
+    if (isChunked) {
+      // Chunked file - download and combine in browser
+      setStatus('downloading');
+      setProgress(0);
+      
+      try {
+        await downloadChunkedFile(file.url, (percent, spd) => {
+          setProgress(percent);
+          setSpeed(spd);
+        });
+        setStatus('done');
+        if (isMobile) setShowPopup(true);
+        setTimeout(() => { setStatus('idle'); setProgress(0); }, 3000);
+      } catch (error) {
+        console.error('Download failed:', error);
+        setStatus('error');
+        setTimeout(() => setStatus('idle'), 3000);
+      }
+    } else {
+      // Regular file - direct download
+      setStatus('downloading');
+      
+      // Use iframe for download to prevent preview
+      const iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      iframe.src = file.url;
+      document.body.appendChild(iframe);
+      
+      setTimeout(() => {
+        setStatus('done');
+        if (isMobile) setShowPopup(true);
+        document.body.removeChild(iframe);
+        setTimeout(() => setStatus('idle'), 3000);
+      }, 1500);
+    }
   };
   
-  // Bunny CDN supports ?download=1 to force Content-Disposition: attachment
-  const downloadUrl = file.url + (file.url.includes('?') ? '&' : '?') + 'download';
+  const closePopup = () => {
+    setShowPopup(false);
+    setStatus('idle');
+  };
+  
+  const formatSpeed = (bytesPerSec) => {
+    if (bytesPerSec > 1024 * 1024) return `${(bytesPerSec / 1024 / 1024).toFixed(1)} MB/s`;
+    if (bytesPerSec > 1024) return `${(bytesPerSec / 1024).toFixed(0)} KB/s`;
+    return `${bytesPerSec.toFixed(0)} B/s`;
+  };
   
   return (
-    <a
-      href={downloadUrl}
-      onClick={handleClick}
-      className={`w-full flex items-center justify-between p-4 rounded-xl border-2 transition-all ${
-        status === 'done' 
-          ? 'bg-green-50 border-green-300' 
-          : 'bg-white border-gray-200 hover:border-gray-300 active:bg-gray-50'
-      }`}
-    >
-      <span className="text-sm text-gray-700 truncate flex-1 mr-4">{file.name}</span>
-      <span className="text-sm font-semibold whitespace-nowrap">
-        {status === 'done' 
-          ? <span className="text-green-600">✓ Downloading...</span>
-          : <span className="text-black">Download ↓</span>
-        }
-      </span>
-    </a>
+    <>
+      <button
+        onClick={handleClick}
+        disabled={status === 'downloading'}
+        className={`w-full flex items-center justify-between p-4 rounded-xl border-2 transition-all ${
+          status === 'done' 
+            ? 'bg-green-50 border-green-300' 
+            : status === 'error'
+            ? 'bg-red-50 border-red-300'
+            : status === 'downloading'
+            ? 'bg-blue-50 border-blue-300'
+            : 'bg-white border-gray-200 hover:border-gray-300 active:bg-gray-50'
+        }`}
+      >
+        <div className="flex-1 mr-4 text-left">
+          <span className="text-sm text-gray-700 truncate block">{file.name}</span>
+          {status === 'downloading' && progress > 0 && (
+            <div className="mt-2">
+              <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                <div className="h-full bg-blue-500 transition-all" style={{ width: `${progress}%` }} />
+              </div>
+              <span className="text-xs text-gray-500 mt-1 block">{progress}% • {formatSpeed(speed)}</span>
+            </div>
+          )}
+        </div>
+        <span className="text-sm font-semibold whitespace-nowrap">
+          {status === 'idle' && <span className="text-black">Download ↓</span>}
+          {status === 'downloading' && <span className="text-blue-600">{progress > 0 ? `${progress}%` : 'Starting...'}</span>}
+          {status === 'done' && <span className="text-green-600">✓ Done</span>}
+          {status === 'error' && <span className="text-red-600">Failed</span>}
+        </span>
+      </button>
+      
+      {/* Mobile popup notification */}
+      {showPopup && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={closePopup}>
+          <div className="bg-white rounded-2xl p-6 max-w-sm w-full text-center shadow-xl" onClick={e => e.stopPropagation()}>
+            <div className="text-5xl mb-4">✓</div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Download Complete</h3>
+            <p className="text-gray-500 mb-6">Check your Downloads folder.</p>
+            <button 
+              onClick={closePopup}
+              className="w-full bg-black text-white py-3 rounded-xl font-medium"
+            >
+              Got it
+            </button>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
