@@ -223,28 +223,88 @@ export const markMagicLinkAccessed = async (token) => {
 // FILE STORAGE - Robust resumable uploads
 // =============================================
 
+const CHUNK_SIZE = 50 * 1024 * 1024; // 50MB chunks
+const PARALLEL_CHUNKS = 6; // 6 parallel uploads for max speed
 const MAX_RETRIES = 10;
 const RETRY_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000, 30000, 30000, 30000, 30000];
 
-// Wait for network to come back online
+// Bunny Edge Script URL
+const UPLOAD_SERVER_URL = process.env.NEXT_PUBLIC_UPLOAD_SERVER_URL || '';
+const BUNNY_CDN_URL = process.env.NEXT_PUBLIC_BUNNY_CDN_URL || 'https://dxtr-staging.b-cdn.net';
+
+// Wait for network
 function waitForOnline() {
   return new Promise((resolve) => {
-    if (navigator.onLine) {
-      resolve();
-    } else {
-      const handler = () => {
-        window.removeEventListener('online', handler);
-        resolve();
-      };
-      window.addEventListener('online', handler);
-    }
+    if (navigator.onLine) return resolve();
+    const handler = () => { window.removeEventListener('online', handler); resolve(); };
+    window.addEventListener('online', handler);
   });
 }
 
-// Sleep helper
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// Main upload function - direct upload with progress
+// Generate unique upload ID
+function generateUploadId(file, projectId) {
+  return `${projectId}_${file.name}_${file.size}_${file.lastModified}`.replace(/[^a-zA-Z0-9_]/g, '_');
+}
+
+// Upload single chunk with retry
+async function uploadChunkWithRetry(uploadId, fileName, chunkIndex, totalChunks, chunkBlob, onProgress, onStatusChange) {
+  let retries = 0;
+  
+  while (retries < MAX_RETRIES) {
+    if (!navigator.onLine) {
+      onStatusChange?.('waiting', 'Waiting for connection...');
+      await waitForOnline();
+      onStatusChange?.('uploading', 'Resuming...');
+      await sleep(1000);
+    }
+    
+    try {
+      return await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        
+        xhr.upload.addEventListener('progress', (e) => {
+          if (e.lengthComputable && onProgress) {
+            onProgress(chunkIndex, e.loaded, e.total);
+          }
+        });
+        
+        xhr.addEventListener('load', () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              resolve(JSON.parse(xhr.responseText));
+            } catch {
+              resolve({ success: true });
+            }
+          } else {
+            reject(new Error(`HTTP ${xhr.status}`));
+          }
+        });
+        
+        xhr.addEventListener('error', () => reject(new Error('Network error')));
+        xhr.addEventListener('timeout', () => reject(new Error('Timeout')));
+        xhr.timeout = 300000; // 5 min timeout per chunk
+        
+        xhr.open('POST', `${UPLOAD_SERVER_URL}/upload-chunk`);
+        xhr.setRequestHeader('X-Upload-Id', uploadId);
+        xhr.setRequestHeader('X-File-Name', encodeURIComponent(fileName));
+        xhr.setRequestHeader('X-Chunk-Index', chunkIndex.toString());
+        xhr.setRequestHeader('X-Total-Chunks', totalChunks.toString());
+        xhr.send(chunkBlob);
+      });
+    } catch (error) {
+      retries++;
+      if (retries >= MAX_RETRIES) throw error;
+      
+      const delay = RETRY_DELAYS[Math.min(retries - 1, RETRY_DELAYS.length - 1)];
+      onStatusChange?.('retrying', `Retry ${retries}/${MAX_RETRIES}...`);
+      await sleep(delay);
+    }
+  }
+}
+
+// Main upload function
 export const uploadFile = async (projectId, file, onProgress, onStatusChange) => {
   const safeFileName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
   const fileName = `${projectId}/${Date.now()}-${safeFileName}`;
@@ -253,7 +313,128 @@ export const uploadFile = async (projectId, file, onProgress, onStatusChange) =>
     throw new Error('Upload server not configured');
   }
   
+  // Small files - direct upload
+  if (file.size <= CHUNK_SIZE) {
+    return uploadSmallFile(fileName, file, onProgress, onStatusChange);
+  }
+  
+  // Large files - parallel chunk upload (no server-side combine)
+  const uploadId = generateUploadId(file, projectId);
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+  
+  onStatusChange?.('uploading', 'Uploading...');
+  
+  // Progress tracking
+  const chunkProgress = new Map();
+  let lastTime = Date.now();
+  let lastBytes = 0;
+  let speedSamples = [];
+  
+  const updateProgress = (chunkIndex, loaded) => {
+    chunkProgress.set(chunkIndex, loaded);
+    
+    let totalBytes = 0;
+    for (const bytes of chunkProgress.values()) {
+      totalBytes += bytes;
+    }
+    
+    const now = Date.now();
+    const timeDiff = (now - lastTime) / 1000;
+    if (timeDiff >= 0.2) {
+      const speed = (totalBytes - lastBytes) / timeDiff;
+      speedSamples.push(speed);
+      if (speedSamples.length > 10) speedSamples.shift();
+      lastBytes = totalBytes;
+      lastTime = now;
+    }
+    
+    const avgSpeed = speedSamples.length > 0 
+      ? speedSamples.reduce((a, b) => a + b, 0) / speedSamples.length 
+      : 0;
+    
+    const percent = Math.round((totalBytes / file.size) * 100);
+    const remaining = file.size - totalBytes;
+    const eta = avgSpeed > 0 ? remaining / avgSpeed : 0;
+    onProgress?.(Math.min(percent, 99), avgSpeed, eta);
+  };
+  
+  // Upload all chunks in parallel
+  const uploadQueue = [];
+  for (let i = 0; i < totalChunks; i++) {
+    uploadQueue.push(i);
+  }
+  
+  const activeUploads = new Set();
+  const completedChunks = new Set();
+  const errors = [];
+  
+  await new Promise((resolve, reject) => {
+    const processQueue = async () => {
+      while (uploadQueue.length > 0 || activeUploads.size > 0) {
+        // Start new uploads up to limit
+        while (uploadQueue.length > 0 && activeUploads.size < PARALLEL_CHUNKS) {
+          const chunkIndex = uploadQueue.shift();
+          activeUploads.add(chunkIndex);
+          
+          const start = chunkIndex * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE, file.size);
+          const chunk = file.slice(start, end);
+          
+          (async () => {
+            try {
+              await uploadChunkWithRetry(
+                uploadId, fileName, chunkIndex, totalChunks, chunk,
+                (idx, loaded) => updateProgress(idx, loaded),
+                onStatusChange
+              );
+              completedChunks.add(chunkIndex);
+              chunkProgress.set(chunkIndex, end - start);
+              updateProgress(chunkIndex, end - start);
+            } catch (error) {
+              errors.push({ chunkIndex, error });
+            } finally {
+              activeUploads.delete(chunkIndex);
+            }
+          })();
+        }
+        
+        await sleep(50);
+      }
+      
+      if (errors.length > 0) {
+        reject(new Error(`Failed to upload ${errors.length} chunks`));
+      } else {
+        resolve();
+      }
+    };
+    
+    processQueue();
+  });
+  
+  // Store chunk info in the URL (no server-side combine)
+  // Format: baseUrl#chunks=N&uploadId=X
+  const chunkedUrl = `${BUNNY_CDN_URL}/${fileName}#chunks=${totalChunks}&uploadId=${uploadId}&size=${file.size}&name=${encodeURIComponent(file.name)}`;
+  
+  onProgress?.(100, 0, 0);
+  onStatusChange?.('complete', 'Upload complete');
+  
+  return {
+    fileName: file.name,
+    fileUrl: chunkedUrl,
+    isChunked: true,
+    totalChunks,
+    uploadId,
+    fileSize: file.size
+  };
+};
+
+// Small file upload
+async function uploadSmallFile(fileName, file, onProgress, onStatusChange) {
   let retries = 0;
+  let startTime = Date.now();
+  let lastLoaded = 0;
+  let lastTime = startTime;
+  let speedSamples = [];
   
   while (retries < MAX_RETRIES) {
     if (!navigator.onLine) {
@@ -267,9 +448,6 @@ export const uploadFile = async (projectId, file, onProgress, onStatusChange) =>
       
       return await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        let lastLoaded = 0;
-        let lastTime = Date.now();
-        let speedSamples = [];
         
         xhr.upload.addEventListener('progress', (e) => {
           if (e.lengthComputable && onProgress) {
@@ -311,17 +489,12 @@ export const uploadFile = async (projectId, file, onProgress, onStatusChange) =>
         });
         
         xhr.addEventListener('error', () => reject(new Error('Network error')));
-        xhr.addEventListener('abort', () => reject(new Error('Aborted')));
-        xhr.addEventListener('timeout', () => reject(new Error('Timeout')));
-        
-        // No timeout - let large files take as long as needed
-        xhr.timeout = 0;
+        xhr.timeout = 300000;
         
         xhr.open('POST', `${UPLOAD_SERVER_URL}/upload`);
         xhr.setRequestHeader('X-File-Name', encodeURIComponent(fileName));
         xhr.send(file);
       });
-      
     } catch (error) {
       retries++;
       if (retries >= MAX_RETRIES) throw error;
@@ -331,12 +504,161 @@ export const uploadFile = async (projectId, file, onProgress, onStatusChange) =>
       await sleep(delay);
     }
   }
+}
+
+// Download and combine chunks on client side
+export async function downloadChunkedFile(fileUrl, onProgress) {
+  // Parse chunk info from URL hash
+  const url = new URL(fileUrl);
+  const hash = url.hash.slice(1);
+  const params = new URLSearchParams(hash);
+  
+  const totalChunks = parseInt(params.get('chunks'));
+  const uploadId = params.get('uploadId');
+  const fileSize = parseInt(params.get('size'));
+  const fileName = decodeURIComponent(params.get('name'));
+  const basePath = url.pathname;
+  
+  if (!totalChunks || !uploadId) {
+    // Not a chunked file, download directly
+    window.location.href = fileUrl.split('#')[0];
+    return;
+  }
+  
+  // Download all chunks in parallel
+  const chunks = new Array(totalChunks);
+  let downloadedBytes = 0;
+  let lastTime = Date.now();
+  let lastBytes = 0;
+  let speedSamples = [];
+  
+  const updateProgress = () => {
+    const now = Date.now();
+    const timeDiff = (now - lastTime) / 1000;
+    if (timeDiff >= 0.2) {
+      const speed = (downloadedBytes - lastBytes) / timeDiff;
+      speedSamples.push(speed);
+      if (speedSamples.length > 10) speedSamples.shift();
+      lastBytes = downloadedBytes;
+      lastTime = now;
+    }
+    
+    const avgSpeed = speedSamples.length > 0 
+      ? speedSamples.reduce((a, b) => a + b, 0) / speedSamples.length 
+      : 0;
+    
+    const percent = Math.round((downloadedBytes / fileSize) * 100);
+    onProgress?.(percent, avgSpeed);
+  };
+  
+  // Download chunks with concurrency limit
+  const PARALLEL_DOWNLOADS = 6;
+  const downloadQueue = [];
+  for (let i = 0; i < totalChunks; i++) {
+    downloadQueue.push(i);
+  }
+  
+  const activeDownloads = new Set();
+  
+  await new Promise((resolve, reject) => {
+    const processQueue = async () => {
+      while (downloadQueue.length > 0 || activeDownloads.size > 0) {
+        while (downloadQueue.length > 0 && activeDownloads.size < PARALLEL_DOWNLOADS) {
+          const chunkIndex = downloadQueue.shift();
+          activeDownloads.add(chunkIndex);
+          
+          (async () => {
+            try {
+              const chunkUrl = `${url.origin}${basePath}.chunk${chunkIndex}`;
+              const response = await fetch(chunkUrl);
+              if (!response.ok) throw new Error(`HTTP ${response.status}`);
+              
+              const blob = await response.blob();
+              chunks[chunkIndex] = blob;
+              downloadedBytes += blob.size;
+              updateProgress();
+            } catch (error) {
+              console.error(`Chunk ${chunkIndex} failed:`, error);
+              // Retry once
+              try {
+                const chunkUrl = `${url.origin}${basePath}.chunk${chunkIndex}`;
+                const response = await fetch(chunkUrl);
+                const blob = await response.blob();
+                chunks[chunkIndex] = blob;
+                downloadedBytes += blob.size;
+                updateProgress();
+              } catch (e) {
+                reject(new Error(`Failed to download chunk ${chunkIndex}`));
+              }
+            } finally {
+              activeDownloads.delete(chunkIndex);
+            }
+          })();
+        }
+        
+        await sleep(50);
+      }
+      resolve();
+    };
+    
+    processQueue();
+  });
+  
+  // Combine chunks into single blob
+  const combinedBlob = new Blob(chunks, { type: 'application/octet-stream' });
+  
+  // Trigger download
+  const downloadUrl = URL.createObjectURL(combinedBlob);
+  const a = document.createElement('a');
+  a.href = downloadUrl;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(downloadUrl);
+  
+  return { success: true };
+}
+
+// Check if URL is a chunked file
+export function isChunkedFile(fileUrl) {
+  return fileUrl && fileUrl.includes('#chunks=');
+}
+
+export const deleteFile = async (fileUrl) => {
+  if (!UPLOAD_SERVER_URL) return;
+  
+  try {
+    // For chunked files, delete all chunks
+    if (isChunkedFile(fileUrl)) {
+      const url = new URL(fileUrl);
+      const hash = url.hash.slice(1);
+      const params = new URLSearchParams(hash);
+      const totalChunks = parseInt(params.get('chunks'));
+      const basePath = url.pathname;
+      
+      for (let i = 0; i < totalChunks; i++) {
+        await fetch(`${UPLOAD_SERVER_URL}/delete`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filePath: `${basePath}.chunk${i}` }),
+        });
+      }
+    } else {
+      await fetch(`${UPLOAD_SERVER_URL}/delete`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath: fileUrl }),
+      });
+    }
+  } catch (error) {
+    console.error('Delete error:', error);
+  }
 };
 
-// Legacy functions for compatibility
+// Legacy exports
 export function getPendingUploads() { return []; }
 export function clearPendingUpload() {}
-export const resumeUpload = async () => { throw new Error('Resume not supported'); };
 
 export const deleteFile = async (fileUrl) => {
   if (!UPLOAD_SERVER_URL) return;
