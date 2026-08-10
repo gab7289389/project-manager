@@ -213,6 +213,54 @@ export const getEditorTasks = async (editorId) => {
   }
 };
 
+// Simple file upload for assets (uses client folder instead of project)
+export const uploadAsset = async (clientId, file) => {
+  const safeFileName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+  const fileName = `assets/${clientId}/${Date.now()}-${safeFileName}`;
+  
+  const response = await fetch(`https://syd.storage.bunnycdn.com/dxtr-staging/${fileName}`, {
+    method: 'PUT',
+    headers: {
+      'AccessKey': '8075c367-6712-48c4-a7a5f328e971-f829-4873',
+      'Content-Type': file.type || 'application/octet-stream'
+    },
+    body: file
+  });
+  
+  if (!response.ok) {
+    throw new Error(`Upload failed: ${response.status}`);
+  }
+  
+  return {
+    fileUrl: `https://dxtr-staging.b-cdn.net/${fileName}`,
+    fileName: file.name
+  };
+};
+
+// Simple file upload for editor submissions
+export const uploadEditorFile = async (projectId, file) => {
+  const safeFileName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+  const fileName = `${projectId}/${Date.now()}-${safeFileName}`;
+  
+  const response = await fetch(`https://syd.storage.bunnycdn.com/dxtr-staging/${fileName}`, {
+    method: 'PUT',
+    headers: {
+      'AccessKey': '8075c367-6712-48c4-a7a5f328e971-f829-4873',
+      'Content-Type': file.type || 'application/octet-stream'
+    },
+    body: file
+  });
+  
+  if (!response.ok) {
+    throw new Error(`Upload failed: ${response.status}`);
+  }
+  
+  return {
+    fileUrl: `https://dxtr-staging.b-cdn.net/${fileName}`,
+    fileName: file.name
+  };
+};
+
 // PROJECTS
 export const getProjects = async () => {
   const { data, error } = await supabase
