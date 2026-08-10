@@ -563,6 +563,18 @@ async function fetchChunk(chunkUrl, index) {
       return await response.blob();
     } catch (error) {
       lastError = error;
+
+      // fetch() rejects with a bare TypeError for CORS rejections, DNS
+      // failures and dropped connections alike - the browser deliberately
+      // withholds the detail. Retrying a CORS misconfiguration is pointless,
+      // so fail fast with a message that names the likely cause.
+      if (error instanceof TypeError && navigator.onLine) {
+        throw new Error(
+          `Could not read ${chunkUrl} - the CDN did not allow the request. ` +
+          'This is usually missing CORS headers on the Bunny pull zone.'
+        );
+      }
+
       if (attempt < DOWNLOAD_RETRIES - 1) {
         await sleep(RETRY_DELAYS[Math.min(attempt, RETRY_DELAYS.length - 1)]);
       }
