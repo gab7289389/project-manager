@@ -220,8 +220,8 @@ export const markMagicLinkAccessed = async (token) => {
 // FILE STORAGE - Uploads via Vercel API routes
 // =============================================
 
-const CHUNK_SIZE = 20 * 1024 * 1024; // 20MB chunks (under Vercel 50MB limit)
-const PARALLEL_CHUNKS = 4; // 4 parallel uploads
+const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB chunks (under Vercel 4.5MB limit)
+const PARALLEL_CHUNKS = 6; // 6 parallel uploads
 const MAX_RETRIES = 10;
 const RETRY_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000, 30000, 30000, 30000, 30000];
 
