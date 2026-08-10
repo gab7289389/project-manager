@@ -776,11 +776,12 @@ function EditorPortalDashboard({ editorId, editorName }) {
     return <div className="h-full flex items-center justify-center bg-slate-900"><div className="animate-spin text-4xl">⏳</div></div>;
   }
   
-  // Group by status
-  const pendingTasks = tasks.filter(t => !t.completed && t.status !== 'pending_review' && !t.editor_submitted_at);
-  const submittedTasks = tasks.filter(t => (t.status === 'pending_review' || t.editor_submitted_at) && !t.completed);
+  // Group by status - check for raw files
+  const hasRawFiles = (t) => t.raw_files && t.raw_files.length > 0;
+  const upcomingTasks = tasks.filter(t => !t.completed && !t.file_url && !hasRawFiles(t));
+  const pendingTasks = tasks.filter(t => !t.completed && !t.file_url && hasRawFiles(t));
+  const submittedTasks = tasks.filter(t => t.file_url && !t.completed);
   const completedTasks = tasks.filter(t => t.completed);
-  const rejectedTasks = tasks.filter(t => t.status === 'rejected');
   
   const overdueTasks = pendingTasks.filter(t => getDaysUntil(t.editor_due_date) !== null && getDaysUntil(t.editor_due_date) < 0);
   const dueSoonTasks = pendingTasks.filter(t => {
@@ -792,6 +793,10 @@ function EditorPortalDashboard({ editorId, editorName }) {
     <div className="h-full flex flex-col bg-slate-900 overflow-auto">
       {/* Stats - Dark themed with vibrant accents */}
       <div className="px-4 py-4 grid grid-cols-4 gap-3">
+        <div className="bg-purple-500/20 rounded-xl p-3 border border-purple-500/50 text-center shadow-lg">
+          <p className="text-2xl font-bold text-purple-400">{upcomingTasks.length}</p>
+          <p className="text-xs text-purple-400 font-medium uppercase tracking-wide">Upcoming</p>
+        </div>
         <div className="bg-slate-800 rounded-xl p-3 border border-slate-700 text-center shadow-lg">
           <p className="text-2xl font-bold text-white">{pendingTasks.length}</p>
           <p className="text-xs text-slate-400 font-medium uppercase tracking-wide">To Do</p>
@@ -799,10 +804,6 @@ function EditorPortalDashboard({ editorId, editorName }) {
         <div className="bg-amber-500/20 rounded-xl p-3 border border-amber-500/50 text-center shadow-lg">
           <p className="text-2xl font-bold text-amber-400">{submittedTasks.length}</p>
           <p className="text-xs text-amber-400 font-medium uppercase tracking-wide">In Review</p>
-        </div>
-        <div className="bg-red-500/20 rounded-xl p-3 border border-red-500/50 text-center shadow-lg">
-          <p className="text-2xl font-bold text-red-400">{rejectedTasks.length}</p>
-          <p className="text-xs text-red-400 font-medium uppercase tracking-wide">Revisions</p>
         </div>
         <div className="bg-emerald-500/20 rounded-xl p-3 border border-emerald-500/50 text-center shadow-lg">
           <p className="text-2xl font-bold text-emerald-400">{completedTasks.length}</p>
@@ -813,34 +814,46 @@ function EditorPortalDashboard({ editorId, editorName }) {
       {/* Task List */}
       <div className="flex-1 px-4 pb-6 space-y-6">
         
-        {/* Rejected Tasks - Show First */}
-        {rejectedTasks.length > 0 && (
+        {/* Upcoming Tasks - No raw files yet */}
+        {upcomingTasks.length > 0 && (
           <div>
-            <h2 className="text-sm font-bold text-red-400 mb-3 flex items-center gap-2 uppercase tracking-wide">
-              <span className="w-6 h-6 bg-red-500 rounded-full flex items-center justify-center text-white text-xs">!</span>
-              <span>Needs Revision</span>
+            <h2 className="text-sm font-bold text-purple-400 mb-3 flex items-center gap-2 uppercase tracking-wide">
+              <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-white text-xs">🔜</span>
+              <span>Upcoming ({upcomingTasks.length})</span>
             </h2>
             <div className="space-y-3">
-              {rejectedTasks.map(task => (
-                <TaskCard 
-                  key={task.id} 
-                  task={task} 
-                  expanded={expanded === task.id}
-                  onToggle={() => setExpanded(expanded === task.id ? null : task.id)}
-                  onUpload={(file) => handleUploadFinal(task.id, task.project_id || task.project?.id, file)}
-                  uploading={uploading === task.id}
-                  clientAssets={clientAssets[task.project?.client?.id] || []}
-                  formatDate={formatDate}
-                  getDaysUntil={getDaysUntil}
-                  getTaskType={getTaskType}
-                  status="rejected"
-                />
+              {upcomingTasks.map(task => (
+                <div key={task.id} className="bg-purple-500/10 border border-purple-500/30 rounded-xl p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <h3 className="font-bold text-lg text-white">{task.project?.name || 'Unknown Project'}</h3>
+                      <p className="text-sm text-violet-400 font-semibold">{getTaskType(task.text)}</p>
+                      <div className="flex items-center gap-2 mt-2">
+                        <span className="bg-blue-500/20 text-blue-300 px-2 py-1 rounded-lg text-xs font-semibold border border-blue-500/30">
+                          🏢 {task.project?.client?.name || 'Unknown Client'}
+                        </span>
+                        <span className="bg-purple-500/30 text-purple-300 px-2 py-1 rounded-lg text-xs font-semibold border border-purple-500/50">
+                          ⏳ Awaiting raw files
+                        </span>
+                      </div>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <p className="font-semibold text-slate-300">{formatDate(task.editor_due_date)}</p>
+                    </div>
+                  </div>
+                  {task.editor_notes && (
+                    <div className="mt-3 pt-3 border-t border-purple-500/20">
+                      <p className="text-xs text-slate-400 mb-1">📝 Notes:</p>
+                      <p className="text-sm text-slate-300">{task.editor_notes}</p>
+                    </div>
+                  )}
+                </div>
               ))}
             </div>
           </div>
         )}
         
-        {/* Pending Tasks */}
+        {/* Pending Tasks - Has raw files, ready to work */}
         {pendingTasks.length > 0 && (
           <div>
             <h2 className="text-sm font-bold text-slate-300 mb-3 flex items-center gap-2 uppercase tracking-wide">
@@ -860,7 +873,6 @@ function EditorPortalDashboard({ editorId, editorName }) {
                   formatDate={formatDate}
                   getDaysUntil={getDaysUntil}
                   getTaskType={getTaskType}
-                  status="pending"
                 />
               ))}
             </div>
@@ -915,7 +927,7 @@ function EditorPortalDashboard({ editorId, editorName }) {
         )}
         
         {/* Empty State */}
-        {pendingTasks.length === 0 && submittedTasks.length === 0 && rejectedTasks.length === 0 && (
+        {upcomingTasks.length === 0 && pendingTasks.length === 0 && submittedTasks.length === 0 && (
           <div className="text-center py-16">
             <p className="text-6xl mb-4">🎉</p>
             <p className="text-xl font-medium text-white">All caught up!</p>
@@ -928,15 +940,13 @@ function EditorPortalDashboard({ editorId, editorName }) {
 }
 
 // Task Card Component for Editor
-function TaskCard({ task, expanded, onToggle, onUpload, uploading, clientAssets, formatDate, getDaysUntil, getTaskType, status }) {
+function TaskCard({ task, expanded, onToggle, onUpload, uploading, clientAssets, formatDate, getDaysUntil, getTaskType }) {
   const fileInputRef = React.useRef(null);
   const daysUntil = getDaysUntil(task.editor_due_date);
   const isOverdue = daysUntil !== null && daysUntil < 0;
   const isDueSoon = daysUntil !== null && daysUntil >= 0 && daysUntil <= 3;
   
-  const cardStyle = status === 'rejected' 
-    ? 'bg-red-500/10 border-red-500/50 ring-2 ring-red-500/30' 
-    : isOverdue 
+  const cardStyle = isOverdue 
       ? 'bg-slate-800 border-red-500/50' 
       : isDueSoon 
         ? 'bg-slate-800 border-amber-500/50' 
@@ -957,11 +967,6 @@ function TaskCard({ task, expanded, onToggle, onUpload, uploading, clientAssets,
               <span className="bg-blue-500/20 text-blue-300 px-2 py-1 rounded-lg text-xs font-semibold border border-blue-500/30">
                 🏢 {task.project?.client?.name || 'Unknown Client'}
               </span>
-              {status === 'rejected' && (
-                <span className="bg-red-500/30 text-red-300 px-2 py-1 rounded-lg text-xs font-semibold border border-red-500/50 animate-pulse">
-                  ⚠️ Revision Needed
-                </span>
-              )}
             </div>
           </div>
           <div className="text-right flex-shrink-0">
@@ -987,14 +992,6 @@ function TaskCard({ task, expanded, onToggle, onUpload, uploading, clientAssets,
       {/* Expanded Content */}
       {expanded && (
         <div className="px-4 pb-4 border-t border-slate-700 bg-slate-900/50 space-y-4">
-          
-          {/* Rejection Notes */}
-          {status === 'rejected' && task.rejection_notes && (
-            <div className="bg-red-500/20 border border-red-500/50 rounded-lg p-4 mt-3">
-              <p className="text-xs font-bold text-red-400 mb-1 uppercase tracking-wide">📝 Revision Notes:</p>
-              <p className="text-sm text-red-200">{task.rejection_notes}</p>
-            </div>
-          )}
           
           {/* Editor Notes */}
           {task.editor_notes && (
@@ -1037,7 +1034,7 @@ function TaskCard({ task, expanded, onToggle, onUpload, uploading, clientAssets,
                 {clientAssets.map((asset, i) => (
                   <a 
                     key={i}
-                    href={asset.file_url}
+                    href={asset.file_url || asset.url}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="flex items-center gap-2 p-3 bg-violet-500/20 border border-violet-500/30 rounded-lg hover:bg-violet-500/30 text-sm transition-colors"
@@ -1637,20 +1634,18 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                           <h4 className="font-medium text-sm mb-4 text-gray-900">🎬 Editor Workflow</h4>
                           {/* Group editor tasks by status */}
                           {(() => {
-                            const pendingReview = editorTasks.filter(t => (t.status === 'pending_review' || t.editor_submitted_at) && !t.completed && t.status !== 'rejected');
-                            const rejected = editorTasks.filter(t => t.status === 'rejected');
-                            const awaitingUpload = editorTasks.filter(t => !t.completed && !t.editor_submitted_at && t.status !== 'pending_review' && t.status !== 'rejected' && !t.file_url);
-                            const completed = editorTasks.filter(t => t.completed);
+                            const pendingReview = editorTasks.filter(t => t.file_url && !t.completed && !t.editor_bypass);
+                            const awaitingUpload = editorTasks.filter(t => !t.completed && !t.file_url && !t.editor_bypass);
+                            const completed = editorTasks.filter(t => t.completed && !t.editor_bypass);
                             
                             return (
                               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                                 {editorTasks.map(t => {
                                   const label = t.text.replace('Submit ', '').replace(' to editor', '');
                                   const isBypassed = t.editor_bypass;
-                                  const isPendingReview = (t.status === 'pending_review' || t.editor_submitted_at) && !t.completed && t.status !== 'rejected' && !isBypassed;
-                                  const isRejected = t.status === 'rejected' && !isBypassed;
+                                  const isPendingReview = t.file_url && !t.completed && !isBypassed;
                                   const isCompleted = t.completed && !isBypassed;
-                                  const isAwaiting = !isCompleted && !isPendingReview && !isRejected && !isBypassed;
+                                  const isAwaiting = !isCompleted && !isPendingReview && !isBypassed;
                                   
                                   return (
                                     <div 
@@ -1658,7 +1653,6 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                                       className={`p-4 rounded-xl border-2 ${
                                         isBypassed ? 'bg-gray-100 border-gray-300' :
                                         isPendingReview ? 'bg-yellow-50 border-yellow-300' :
-                                        isRejected ? 'bg-red-50 border-red-300' :
                                         isCompleted ? 'bg-green-50 border-green-200' :
                                         'bg-white border-gray-200'
                                       }`}
@@ -1672,13 +1666,11 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                                         <span className={`text-xs px-2 py-1 rounded-full font-medium ${
                                           isBypassed ? 'bg-gray-200 text-gray-600' :
                                           isPendingReview ? 'bg-yellow-200 text-yellow-800' :
-                                          isRejected ? 'bg-red-200 text-red-800' :
                                           isCompleted ? 'bg-green-200 text-green-800' :
                                           t.editor_id ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'
                                         }`}>
                                           {isBypassed ? '⚡ Bypassed' :
                                            isPendingReview ? '⏳ Review' :
-                                           isRejected ? '⚠️ Revision' :
                                            isCompleted ? '✓ Approved' :
                                            t.editor_id ? '🎬 In Progress' : 'Unassigned'}
                                         </span>
@@ -1694,13 +1686,6 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                                           >
                                             ↩ Undo Bypass
                                           </button>
-                                        </div>
-                                      )}
-                                      
-                                      {/* Rejection notes */}
-                                      {isRejected && t.rejection_notes && (
-                                        <div className="text-xs text-red-700 bg-red-100 p-2 rounded mb-3">
-                                          📝 {t.rejection_notes}
                                         </div>
                                       )}
                                       
@@ -1766,10 +1751,6 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                                             </label>
                                           </div>
                                         </div>
-                                      )}
-                                      
-                                      {isRejected && (
-                                        <p className="text-xs text-red-600 italic">Waiting for editor to resubmit</p>
                                       )}
                                     </div>
                                   );
@@ -2042,11 +2023,11 @@ function ClientAssetsModal({ client, onClose }) {
         // Upload to Bunny using asset upload function
         const result = await db.uploadAsset(client.id, file);
         
-        // Create asset record
+        // Create asset record - use 'url' not 'file_url'
         await db.createAsset({
           client_id: client.id,
           name: file.name,
-          file_url: result.fileUrl,
+          url: result.fileUrl,
           type: assetType,
           size: file.size
         });
@@ -2062,7 +2043,7 @@ function ClientAssetsModal({ client, onClose }) {
   const handleDelete = async (asset) => {
     if (!confirm(`Delete "${asset.name}"?`)) return;
     try {
-      await db.deleteAsset(asset.id, asset.file_url);
+      await db.deleteAsset(asset.id, asset.url || asset.file_url);
       setAssets(prev => prev.filter(a => a.id !== asset.id));
     } catch (e) {
       console.error('Failed to delete asset:', e);
@@ -2140,7 +2121,7 @@ function ClientAssetsModal({ client, onClose }) {
                       <p className="text-xs text-gray-500">{asset.type} • {formatSize(asset.size)}</p>
                     </div>
                     <a 
-                      href={asset.file_url} 
+                      href={asset.url || asset.file_url} 
                       target="_blank" 
                       rel="noopener noreferrer"
                       className="text-blue-600 hover:text-blue-800 text-sm"
