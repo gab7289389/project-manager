@@ -304,10 +304,6 @@ export const uploadFile = async (projectId, file, onProgress, onStatusChange) =>
   const safeFileName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
   const fileName = `${projectId}/${Date.now()}-${safeFileName}`;
   
-  if (!UPLOAD_SERVER_URL) {
-    throw new Error('Upload server not configured');
-  }
-  
   // Small files - direct upload
   if (file.size <= CHUNK_SIZE) {
     return uploadSmallFile(fileName, file, onProgress, onStatusChange);
