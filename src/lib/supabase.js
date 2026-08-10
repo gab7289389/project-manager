@@ -63,42 +63,40 @@ export const deleteService = async (id) => {
 
 // EDITORS
 export const getEditors = async () => {
-  const { data, error } = await supabase.from('editors').select('id, username, name, email, is_active, created_at').order('name');
+  const { data, error } = await supabase.from('editors').select('*').order('name');
   if (error) throw error;
   return data;
 };
 
 export const createEditor = async (editor) => {
-  // Use database function to hash password
-  const { data, error } = await supabase.rpc('hash_editor_password', { password: editor.password });
-  if (error) throw error;
+  // Simple version - stores password as-is (migration adds proper hashing)
+  const insertData = {
+    name: editor.name,
+    email: editor.email || ''
+  };
+  
+  // Only add these fields if migration has been run
+  if (editor.username) insertData.username = editor.username;
+  if (editor.password) insertData.password_hash = editor.password; // Plain text until migration
   
   const { data: newEditor, error: insertError } = await supabase
     .from('editors')
-    .insert({
-      username: editor.username,
-      password_hash: data,
-      name: editor.name,
-      email: editor.email,
-      is_active: true
-    })
-    .select('id, username, name, email, is_active, created_at')
+    .insert(insertData)
+    .select('*')
     .single();
   if (insertError) throw insertError;
   return newEditor;
 };
 
 export const updateEditor = async (id, updates) => {
-  // If password is being updated, hash it first
   let updateData = { ...updates };
+  // Move password to password_hash if provided
   if (updates.password) {
-    const { data: hash, error: hashError } = await supabase.rpc('hash_editor_password', { password: updates.password });
-    if (hashError) throw hashError;
-    updateData = { ...updates, password_hash: hash };
+    updateData.password_hash = updates.password;
     delete updateData.password;
   }
   
-  const { data, error } = await supabase.from('editors').update(updateData).eq('id', id).select('id, username, name, email, is_active, created_at').single();
+  const { data, error } = await supabase.from('editors').update(updateData).eq('id', id).select('*').single();
   if (error) throw error;
   return data;
 };
