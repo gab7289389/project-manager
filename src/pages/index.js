@@ -1039,7 +1039,7 @@ function TaskCard({ task, expanded, onToggle, onUpload, uploading, clientAssets,
                     rel="noopener noreferrer"
                     className="flex items-center gap-2 p-3 bg-violet-500/20 border border-violet-500/30 rounded-lg hover:bg-violet-500/30 text-sm transition-colors"
                   >
-                    <span>{asset.type === 'image' ? '🖼️' : asset.type === 'font' ? '🔤' : asset.type === 'video' ? '🎬' : '📄'}</span>
+                    <span>{(asset.asset_type || asset.type) === 'image' ? '🖼️' : (asset.asset_type || asset.type) === 'font' ? '🔤' : (asset.asset_type || asset.type) === 'video' ? '🎬' : '📄'}</span>
                     <span className="truncate flex-1 text-violet-200 font-medium">{asset.name}</span>
                     <span className="text-violet-400">↓</span>
                   </a>
@@ -2023,13 +2023,13 @@ function ClientAssetsModal({ client, onClose }) {
         // Upload to Bunny using asset upload function
         const result = await db.uploadAsset(client.id, file);
         
-        // Create asset record - use 'url' not 'file_url'
+        // Create asset record - use correct column names from table
         await db.createAsset({
           client_id: client.id,
           name: file.name,
           url: result.fileUrl,
-          type: assetType,
-          size: file.size
+          asset_type: assetType,
+          file_size: file.size
         });
       } catch (e) {
         console.error('Failed to upload asset:', e);
@@ -2115,10 +2115,10 @@ function ClientAssetsModal({ client, onClose }) {
               <div className="space-y-2">
                 {assets.map(asset => (
                   <div key={asset.id} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg border">
-                    <span className="text-2xl">{getAssetIcon(asset.type)}</span>
+                    <span className="text-2xl">{getAssetIcon(asset.asset_type || asset.type)}</span>
                     <div className="flex-1 min-w-0">
                       <p className="font-medium text-sm truncate">{asset.name}</p>
-                      <p className="text-xs text-gray-500">{asset.type} • {formatSize(asset.size)}</p>
+                      <p className="text-xs text-gray-500">{asset.asset_type || asset.type} • {formatSize(asset.file_size || asset.size)}</p>
                     </div>
                     <a 
                       href={asset.url || asset.file_url} 
