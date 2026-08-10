@@ -734,17 +734,16 @@ function EditorPortalDashboard({ editorId, editorName }) {
     setUploading(taskId);
     try {
       const result = await db.uploadEditorFile(projectId, file);
-      // Only update columns that exist - file_url, file_name, status
+      // Only update columns that definitely exist
       await db.updateTask(taskId, { 
         file_url: result.fileUrl,
-        file_name: file.name,
-        status: 'pending_review'
+        file_name: file.name
       });
       setTasks(prev => prev.map(t => t.id === taskId ? { 
         ...t, 
         file_url: result.fileUrl, 
         file_name: file.name,
-        status: 'pending_review'
+        status: 'pending_review' // Local state only
       } : t));
       alert('✅ File uploaded! Waiting for admin review.');
     } catch (e) {
@@ -1256,7 +1255,7 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       ...p,
       tasks: p.tasks.map(t => {
         if (t.id === taskId) {
-          return { ...t, completed: true, status: 'approved', approved_at: new Date().toISOString() };
+          return { ...t, completed: true, status: 'approved' }; // Local state
         }
         // Copy file to client task
         if (clientTask && t.id === clientTask.id && editorTask?.file_url) {
@@ -1267,11 +1266,13 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     }));
     
     try {
-      await db.updateTask(taskId, { completed: true, status: 'approved', approved_at: new Date().toISOString() });
+      // Only update columns that exist
+      await db.updateTask(taskId, { completed: true });
       // Also update client task with the file
       if (clientTask && editorTask?.file_url) {
         await db.updateTask(clientTask.id, { file_url: editorTask.file_url, file_name: editorTask.file_name });
       }
+      alert('✅ Approved! File copied to client deliverables.');
     } catch (e) {
       console.error(e);
       await refreshData();
@@ -1284,22 +1285,22 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       ...p,
       tasks: p.tasks.map(t => t.id === taskId ? { 
         ...t, 
-        status: 'rejected', 
-        rejection_notes: notes,
+        status: 'rejected', // Local state only
+        rejection_notes: notes, // Local state only
         file_url: null, // Clear the file so editor can re-upload
         file_name: null,
-        editor_submitted_at: null
+        completed: false
       } : t)
     }));
     
     try {
+      // Only update columns that exist - clear the file
       await db.updateTask(taskId, { 
-        status: 'rejected', 
-        rejection_notes: notes,
         file_url: null,
         file_name: null,
-        editor_submitted_at: null
+        completed: false
       });
+      alert('Task sent back for revision. Editor will see it on their dashboard.');
     } catch (e) {
       console.error(e);
       await refreshData();
