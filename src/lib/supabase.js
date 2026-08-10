@@ -250,15 +250,59 @@ function generateUploadId(file, projectId) {
 // crash or reload. Any uncertainty answers "no" - re-uploading is safe, and
 // wrongly skipping a chunk would corrupt the file.
 async function chunkAlreadyUploaded(fileName, chunkIndex, expectedSize) {
+  const result = await probeChunk(fileName, chunkIndex);
+  return result.exists && result.size === expectedSize;
+}
+
+// Ask the CDN about a chunk. Distinguishes "definitely not there" from
+// "couldn't tell" - a CORS-blocked probe must not be read as a missing file.
+async function probeChunk(fileName, chunkIndex) {
   try {
     const response = await fetch(`${BUNNY_CDN_URL}/${fileName}.chunk${chunkIndex}`, {
       method: 'HEAD',
       cache: 'no-store',
     });
-    if (!response.ok) return false;
-    return parseInt(response.headers.get('content-length'), 10) === expectedSize;
+    return {
+      exists: response.ok,
+      size: parseInt(response.headers.get('content-length'), 10),
+      blocked: false,
+    };
   } catch {
-    return false;
+    // Network or CORS failure - no information either way.
+    return { exists: false, size: NaN, blocked: true };
+  }
+}
+
+// An upload server can return 2xx without actually storing anything, which
+// leaves a file_url in the database pointing at chunks that do not exist.
+// Confirm the first and last chunk really landed before calling it a success.
+async function verifyChunksStored(fileName, totalChunks, expectedLastSize) {
+  const [first, last] = await Promise.all([
+    probeChunk(fileName, 0),
+    probeChunk(fileName, totalChunks - 1),
+  ]);
+
+  if (first.blocked || last.blocked) {
+    console.warn(
+      'Could not verify uploaded chunks - the CDN blocked the check (likely ' +
+      'missing CORS headers on the pull zone). Proceeding without verification.'
+    );
+    return;
+  }
+
+  if (!first.exists || !last.exists) {
+    throw new Error(
+      'Upload reported success but no chunks were stored on the CDN. ' +
+      'The upload server accepted the data without saving it - check that ' +
+      'it implements /upload-chunk and writes to the storage zone this app reads from.'
+    );
+  }
+
+  if (Number.isFinite(expectedLastSize) && last.size !== expectedLastSize) {
+    throw new Error(
+      `Final chunk is ${last.size} bytes on the CDN but should be ${expectedLastSize}. ` +
+      'The upload is incomplete.'
+    );
   }
 }
 
@@ -406,6 +450,10 @@ export const uploadFile = async (projectId, file, onProgress, onStatusChange) =>
   await Promise.all(
     Array.from({ length: Math.min(PARALLEL_CHUNKS, totalChunks) }, uploadWorker)
   );
+
+  // Never record a file_url for chunks that are not actually on the CDN.
+  onStatusChange?.('finalizing', 'Verifying upload...');
+  await verifyChunksStored(fileName, totalChunks, file.size - (totalChunks - 1) * CHUNK_SIZE);
 
   // Store chunk info in the URL (no server-side combine)
   // Format: baseUrl#chunks=N&uploadId=X
