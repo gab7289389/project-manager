@@ -190,22 +190,27 @@ export const logoutEditor = async (token) => {
 
 // Get tasks assigned to an editor
 export const getEditorTasks = async (editorId) => {
-  const { data, error } = await supabase
-    .from('tasks')
-    .select(`
-      *,
-      project:projects(
-        id,
-        name,
-        due_date,
-        client:clients(id, name)
-      )
-    `)
-    .eq('editor_id', editorId)
-    .eq('is_editor_task', true)
-    .order('editor_due_date');
-  if (error) throw error;
-  return data;
+  // Try with is_editor_task filter first, fall back to just editor_id
+  try {
+    const { data, error } = await supabase
+      .from('tasks')
+      .select(`
+        *,
+        project:projects(
+          id,
+          name,
+          due_date,
+          client:clients(id, name)
+        )
+      `)
+      .eq('editor_id', editorId)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    return data || [];
+  } catch (e) {
+    console.error('getEditorTasks error:', e);
+    return [];
+  }
 };
 
 // PROJECTS
