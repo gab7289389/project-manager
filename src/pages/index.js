@@ -304,32 +304,118 @@ function useUploadManager(maxConcurrent = 2) {
 // MAIN APP
 // =============================================
 
-function LoginScreen({ onLogin }) {
+function LoginScreen({ onLogin, onEditorLogin }) {
+  const [mode, setMode] = useState('select'); // 'select', 'admin', 'editor'
   const [password, setPassword] = useState('');
+  const [username, setUsername] = useState('');
   const [error, setError] = useState('');
-  const handleSubmit = (e) => {
+  const [loading, setLoading] = useState(false);
+  
+  const handleAdminSubmit = (e) => {
     e.preventDefault();
     if (VALID_PASSWORDS.includes(password)) {
       localStorage.setItem('pm_authenticated', 'true');
+      localStorage.setItem('pm_mode', 'admin');
       onLogin();
     } else {
       setError('Invalid password');
     }
   };
+  
+  const handleEditorSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    try {
+      const result = await db.loginEditor(username, password);
+      if (result) {
+        localStorage.setItem('editor_token', result.session_token || result.id);
+        localStorage.setItem('editor_name', result.editor_name || result.name);
+        localStorage.setItem('editor_id', result.editor_id || result.id);
+        localStorage.setItem('pm_mode', 'editor');
+        onEditorLogin(result);
+      } else {
+        setError('Invalid username or password');
+      }
+    } catch (err) {
+      setError('Invalid username or password');
+    }
+    setLoading(false);
+  };
+  
+  // Selection screen
+  if (mode === 'select') {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-xl border border-gray-200 p-10 w-full max-w-md">
+          <div className="text-center mb-10">
+            <div className="w-16 h-16 bg-black rounded-2xl flex items-center justify-center mx-auto mb-5">
+              <span className="text-white font-bold text-2xl">D</span>
+            </div>
+            <h1 className="text-2xl font-bold text-gray-900">DXTR Visions</h1>
+            <p className="text-gray-500 mt-2">Select your role</p>
+          </div>
+          <div className="space-y-3">
+            <button 
+              onClick={() => setMode('admin')} 
+              className="w-full flex items-center justify-center gap-3 bg-black text-white py-4 rounded-xl font-semibold hover:bg-gray-800 transition-colors"
+            >
+              <span className="text-xl">👤</span> Login as Admin
+            </button>
+            <button 
+              onClick={() => setMode('editor')} 
+              className="w-full flex items-center justify-center gap-3 bg-blue-600 text-white py-4 rounded-xl font-semibold hover:bg-blue-700 transition-colors"
+            >
+              <span className="text-xl">🎬</span> Login as Editor
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  
+  // Admin login
+  if (mode === 'admin') {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-xl border border-gray-200 p-10 w-full max-w-md">
+          <button onClick={() => { setMode('select'); setError(''); setPassword(''); }} className="text-gray-400 hover:text-gray-600 mb-4">← Back</button>
+          <div className="text-center mb-10">
+            <div className="w-16 h-16 bg-black rounded-2xl flex items-center justify-center mx-auto mb-5">
+              <span className="text-white font-bold text-2xl">👤</span>
+            </div>
+            <h1 className="text-2xl font-bold text-gray-900">Admin Login</h1>
+            <p className="text-gray-500 mt-2">Enter admin password</p>
+          </div>
+          <form onSubmit={handleAdminSubmit}>
+            <input type="password" value={password} onChange={(e) => { setPassword(e.target.value); setError(''); }} placeholder="Enter password" className="w-full px-4 py-3.5 border border-gray-200 rounded-xl focus:border-black focus:ring-1 focus:ring-black focus:outline-none text-lg" autoFocus />
+            {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
+            <button type="submit" className="w-full mt-5 bg-black text-white py-3.5 rounded-xl font-semibold hover:bg-gray-800 transition-colors">Login</button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+  
+  // Editor login
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-xl border border-gray-200 p-10 w-full max-w-md">
+        <button onClick={() => { setMode('select'); setError(''); setPassword(''); setUsername(''); }} className="text-gray-400 hover:text-gray-600 mb-4">← Back</button>
         <div className="text-center mb-10">
-          <div className="w-16 h-16 bg-black rounded-2xl flex items-center justify-center mx-auto mb-5">
-            <span className="text-white font-bold text-2xl">D</span>
+          <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-5">
+            <span className="text-white font-bold text-2xl">🎬</span>
           </div>
-          <h1 className="text-2xl font-bold text-gray-900">DXTR Admin</h1>
-          <p className="text-gray-500 mt-2">Enter password to continue</p>
+          <h1 className="text-2xl font-bold text-gray-900">Editor Login</h1>
+          <p className="text-gray-500 mt-2">Enter your credentials</p>
         </div>
-        <form onSubmit={handleSubmit}>
-          <input type="password" value={password} onChange={(e) => { setPassword(e.target.value); setError(''); }} placeholder="Enter password" className="w-full px-4 py-3.5 border border-gray-200 rounded-xl focus:border-black focus:ring-1 focus:ring-black focus:outline-none text-lg" autoFocus />
+        <form onSubmit={handleEditorSubmit}>
+          <input type="text" value={username} onChange={(e) => { setUsername(e.target.value); setError(''); }} placeholder="Username" className="w-full px-4 py-3.5 border border-gray-200 rounded-xl focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none text-lg mb-3" autoFocus />
+          <input type="password" value={password} onChange={(e) => { setPassword(e.target.value); setError(''); }} placeholder="Password" className="w-full px-4 py-3.5 border border-gray-200 rounded-xl focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none text-lg" />
           {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
-          <button type="submit" className="w-full mt-5 bg-black text-white py-3.5 rounded-xl font-semibold hover:bg-gray-800 transition-colors">Login</button>
+          <button type="submit" disabled={loading} className="w-full mt-5 bg-blue-600 text-white py-3.5 rounded-xl font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50">
+            {loading ? '⏳ Logging in...' : 'Login'}
+          </button>
         </form>
       </div>
     </div>
@@ -360,6 +446,8 @@ const getServiceTypesFromTasks = (tasks) => {
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
+  const [loginMode, setLoginMode] = useState(null); // 'admin' or 'editor'
+  const [editorInfo, setEditorInfo] = useState(null);
   const [portal, setPortal] = useState('admin');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [clients, setClients] = useState([]);
@@ -385,11 +473,22 @@ export default function App() {
 
   useEffect(() => {
     const auth = localStorage.getItem('pm_authenticated');
-    setIsAuthenticated(auth === 'true');
+    const mode = localStorage.getItem('pm_mode');
+    const editorId = localStorage.getItem('editor_id');
+    const editorName = localStorage.getItem('editor_name');
+    
+    if (auth === 'true') {
+      setIsAuthenticated(true);
+      setLoginMode(mode || 'admin');
+      if (mode === 'editor' && editorId) {
+        setEditorInfo({ id: editorId, name: editorName });
+        setPortal('editor');
+      }
+    }
     setAuthChecked(true);
   }, []);
 
-  useEffect(() => { if (isAuthenticated) loadAllData(); }, [isAuthenticated]);
+  useEffect(() => { if (isAuthenticated && loginMode === 'admin') loadAllData(); }, [isAuthenticated, loginMode]);
   
   // Check for pending uploads on mount
   useEffect(() => {
@@ -397,7 +496,6 @@ export default function App() {
       const pending = getPendingUploads();
       if (pending.length > 0) {
         console.log('Found pending uploads:', pending);
-        // Could show a notification here asking user to resume
       }
     }
   }, [isAuthenticated]);
@@ -447,12 +545,47 @@ export default function App() {
     );
     
     return () => unsubscribe();
-  }, [isAuthenticated]);
+  }, [isAuthenticated, loginMode]);
 
-  const handleLogout = () => { localStorage.removeItem('pm_authenticated'); setIsAuthenticated(false); };
+  const handleLogout = () => { 
+    localStorage.removeItem('pm_authenticated'); 
+    localStorage.removeItem('pm_mode');
+    localStorage.removeItem('editor_id');
+    localStorage.removeItem('editor_name');
+    localStorage.removeItem('editor_token');
+    setIsAuthenticated(false); 
+    setLoginMode(null);
+    setEditorInfo(null);
+  };
 
   if (!authChecked) return <div className="h-screen flex items-center justify-center bg-gray-50"><div className="animate-spin text-4xl">⏳</div></div>;
-  if (!isAuthenticated) return <LoginScreen onLogin={() => setIsAuthenticated(true)} />;
+  
+  if (!isAuthenticated) return <LoginScreen 
+    onLogin={() => { setIsAuthenticated(true); setLoginMode('admin'); }} 
+    onEditorLogin={(info) => { setIsAuthenticated(true); setLoginMode('editor'); setEditorInfo(info); setPortal('editor'); }}
+  />;
+  
+  // Editor logged in - show only editor portal
+  if (loginMode === 'editor') {
+    return (
+      <div className="h-screen flex flex-col bg-gray-50">
+        <div className="bg-blue-600 text-white px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="text-xl">🎬</span>
+            <span className="font-medium">Editor Dashboard</span>
+          </div>
+          <div className="flex items-center gap-4">
+            <span className="text-sm opacity-90">Welcome, {editorInfo?.name || 'Editor'}</span>
+            <button onClick={handleLogout} className="text-white/70 hover:text-white text-sm">Logout</button>
+          </div>
+        </div>
+        <div className="flex-1 overflow-hidden">
+          <EditorPortalDashboard editorId={editorInfo?.id} editorName={editorInfo?.name} />
+        </div>
+      </div>
+    );
+  }
+  
   if (loading) return <div className="h-screen flex items-center justify-center bg-gray-50"><div className="text-center"><div className="animate-spin text-4xl mb-4">⏳</div><p className="text-gray-500">Loading...</p></div></div>;
 
   return (
@@ -506,84 +639,38 @@ function Placeholder({ type }) {
   return <div className="h-full flex items-center justify-center bg-gray-50"><div className="text-center text-gray-400"><p className="text-6xl mb-4">{cfg?.icon || '📋'}</p><p className="text-xl font-medium capitalize">{type} Portal</p><p className="text-sm mt-2">Coming soon</p></div></div>;
 }
 
+// Editor Portal (for admin view - requires login via main login screen now)
 function EditorPortal() {
-  const [editorSession, setEditorSession] = useState(null);
+  return <div className="h-full flex items-center justify-center bg-gray-50">
+    <div className="text-center text-gray-500">
+      <p className="text-5xl mb-4">🎬</p>
+      <p className="text-lg">Editor Portal</p>
+      <p className="text-sm mt-2">Log in as an editor from the main login screen</p>
+    </div>
+  </div>;
+}
+
+// Editor Dashboard (when logged in as editor)
+function EditorPortalDashboard({ editorId, editorName }) {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [loginForm, setLoginForm] = useState({ username: '', password: '' });
-  const [loginError, setLoginError] = useState('');
-  const [loggingIn, setLoggingIn] = useState(false);
   const [expanded, setExpanded] = useState(null);
   
-  // Check for existing session on mount
   useEffect(() => {
-    const checkSession = async () => {
-      const token = localStorage.getItem('editor_token');
-      if (token) {
-        try {
-          const editor = await db.getEditorFromToken(token);
-          if (editor) {
-            setEditorSession({ ...editor, token });
-            await loadTasks(editor.editor_id);
-          } else {
-            localStorage.removeItem('editor_token');
-          }
-        } catch (e) {
-          console.error('Session check failed:', e);
-          localStorage.removeItem('editor_token');
-        }
-      }
-      setLoading(false);
-    };
-    checkSession();
-  }, []);
+    loadTasks();
+  }, [editorId]);
   
-  const loadTasks = async (editorId) => {
+  const loadTasks = async () => {
+    if (!editorId) return;
     try {
+      setLoading(true);
       const data = await db.getEditorTasks(editorId);
       setTasks(data || []);
     } catch (e) {
       console.error('Failed to load tasks:', e);
+    } finally {
+      setLoading(false);
     }
-  };
-  
-  const handleLogin = async () => {
-    if (!loginForm.username || !loginForm.password) {
-      setLoginError('Please enter username and password');
-      return;
-    }
-    
-    setLoggingIn(true);
-    setLoginError('');
-    
-    try {
-      const result = await db.loginEditor(loginForm.username, loginForm.password);
-      if (result) {
-        localStorage.setItem('editor_token', result.session_token);
-        setEditorSession({ editor_id: result.editor_id, editor_name: result.editor_name, token: result.session_token });
-        await loadTasks(result.editor_id);
-      } else {
-        setLoginError('Invalid username or password');
-      }
-    } catch (e) {
-      console.error('Login failed:', e);
-      setLoginError('Login failed. Please try again.');
-    }
-    setLoggingIn(false);
-  };
-  
-  const handleLogout = async () => {
-    try {
-      if (editorSession?.token) {
-        await db.logoutEditor(editorSession.token);
-      }
-    } catch (e) {
-      console.error('Logout error:', e);
-    }
-    localStorage.removeItem('editor_token');
-    setEditorSession(null);
-    setTasks([]);
-    setLoginForm({ username: '', password: '' });
   };
   
   const markTaskComplete = async (taskId) => {
@@ -612,63 +699,6 @@ function EditorPortal() {
     return <div className="h-full flex items-center justify-center bg-gray-50"><div className="animate-spin text-4xl">⏳</div></div>;
   }
   
-  // Login screen
-  if (!editorSession) {
-    return (
-      <div className="h-full flex items-center justify-center bg-gradient-to-br from-blue-50 to-purple-50">
-        <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
-          <div className="text-center mb-8">
-            <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
-              <span className="text-3xl">🎬</span>
-            </div>
-            <h1 className="text-2xl font-bold text-gray-900">Editor Portal</h1>
-            <p className="text-gray-500 mt-1">Sign in to view your tasks</p>
-          </div>
-          
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
-              <input 
-                type="text"
-                value={loginForm.username}
-                onChange={e => setLoginForm({ ...loginForm, username: e.target.value })}
-                onKeyDown={e => e.key === 'Enter' && handleLogin()}
-                className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                placeholder="Your username"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-              <input 
-                type="password"
-                value={loginForm.password}
-                onChange={e => setLoginForm({ ...loginForm, password: e.target.value })}
-                onKeyDown={e => e.key === 'Enter' && handleLogin()}
-                className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                placeholder="Your password"
-              />
-            </div>
-            
-            {loginError && (
-              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
-                {loginError}
-              </div>
-            )}
-            
-            <button 
-              onClick={handleLogin}
-              disabled={loggingIn}
-              className="w-full bg-blue-600 text-white py-3 rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
-            >
-              {loggingIn ? '⏳ Signing in...' : 'Sign In'}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-  
-  // Dashboard
   const pendingTasks = tasks.filter(t => !t.completed);
   const completedTasks = tasks.filter(t => t.completed);
   const overdueTasks = pendingTasks.filter(t => getDaysUntil(t.editor_due_date) !== null && getDaysUntil(t.editor_due_date) < 0);
@@ -678,23 +708,7 @@ function EditorPortal() {
   });
   
   return (
-    <div className="h-full flex flex-col bg-gray-50">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center">
-            <span className="text-xl">🎬</span>
-          </div>
-          <div>
-            <h1 className="font-semibold text-gray-900">Welcome, {editorSession.editor_name}</h1>
-            <p className="text-sm text-gray-500">{pendingTasks.length} pending task{pendingTasks.length !== 1 ? 's' : ''}</p>
-          </div>
-        </div>
-        <button onClick={handleLogout} className="text-gray-500 hover:text-gray-700 text-sm">
-          Logout
-        </button>
-      </header>
-      
+    <div className="h-full flex flex-col bg-gray-50 overflow-auto">
       {/* Stats */}
       <div className="px-6 py-4 grid grid-cols-2 sm:grid-cols-4 gap-4">
         <div className="bg-white rounded-xl p-4 border border-gray-200">
@@ -716,7 +730,7 @@ function EditorPortal() {
       </div>
       
       {/* Task List */}
-      <div className="flex-1 overflow-auto px-6 pb-6">
+      <div className="flex-1 px-6 pb-6">
         {pendingTasks.length === 0 ? (
           <div className="text-center py-16">
             <p className="text-6xl mb-4">🎉</p>
@@ -733,10 +747,7 @@ function EditorPortal() {
               
               return (
                 <div key={task.id} className={`bg-white rounded-xl border-2 overflow-hidden transition-all ${isOverdue ? 'border-red-300' : isDueSoon ? 'border-orange-300' : 'border-gray-200'}`}>
-                  <div 
-                    className="p-4 cursor-pointer hover:bg-gray-50 transition-colors"
-                    onClick={() => setExpanded(isExpanded ? null : task.id)}
-                  >
+                  <div className="p-4 cursor-pointer hover:bg-gray-50 transition-colors" onClick={() => setExpanded(isExpanded ? null : task.id)}>
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex-1 min-w-0">
                         <p className="font-medium text-gray-900 truncate">{task.text}</p>
@@ -763,10 +774,7 @@ function EditorPortal() {
                     </div>
                     <div className="flex items-center justify-between mt-3">
                       <span className="text-xs text-gray-400">{isExpanded ? '▲ Less' : '▼ More details'}</span>
-                      <button 
-                        onClick={(e) => { e.stopPropagation(); markTaskComplete(task.id); }}
-                        className="bg-green-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors"
-                      >
+                      <button onClick={(e) => { e.stopPropagation(); markTaskComplete(task.id); }} className="bg-green-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors">
                         ✓ Mark Complete
                       </button>
                     </div>
@@ -775,7 +783,6 @@ function EditorPortal() {
                   {isExpanded && (
                     <div className="px-4 pb-4 border-t border-gray-100 bg-gray-50">
                       <div className="pt-4 space-y-3">
-                        {/* Notes */}
                         {task.editor_notes && (
                           <div>
                             <p className="text-xs font-medium text-gray-500 uppercase mb-1">Notes</p>
@@ -783,19 +790,12 @@ function EditorPortal() {
                           </div>
                         )}
                         
-                        {/* Raw Files */}
                         {task.raw_files && task.raw_files.length > 0 && (
                           <div>
                             <p className="text-xs font-medium text-gray-500 uppercase mb-2">Raw Files</p>
                             <div className="space-y-1">
                               {task.raw_files.map((file, i) => (
-                                <a 
-                                  key={i}
-                                  href={file.url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="flex items-center gap-2 text-sm text-blue-600 hover:text-blue-800 bg-white p-2 rounded-lg border hover:bg-blue-50 transition-colors"
-                                >
+                                <a key={i} href={file.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm text-blue-600 hover:text-blue-800 bg-white p-2 rounded-lg border hover:bg-blue-50 transition-colors">
                                   <span>📎</span>
                                   <span className="truncate flex-1">{file.name}</span>
                                   <span className="text-gray-400 text-xs">↗</span>
@@ -805,7 +805,6 @@ function EditorPortal() {
                           </div>
                         )}
                         
-                        {/* Project Details */}
                         <div className="grid grid-cols-2 gap-3 text-sm">
                           <div className="bg-white p-3 rounded-lg border">
                             <p className="text-xs text-gray-500">Project Due</p>
@@ -1411,8 +1410,8 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
         {tab === 'database' && <Database clients={clients} setClients={setClients} services={services} setServices={setServices} editors={editors} setEditors={setEditors} setSidebarOpen={setSidebarOpen} refreshData={refreshData} />}
       </main>
 
-      {modal?.type === 'addProject' && <AddProjectModal clients={clients} services={services} onClose={() => setModal(null)} onCreate={async (p, t) => { await createProject(p, t); setModal(null); }} />}
-      {modal?.type === 'editProject' && <EditProjectModal project={modal.project} clients={clients} services={services} onClose={() => setModal(null)} onSave={async (u) => { await updateProject(modal.project.id, u); setModal(null); }} />}
+      {modal?.type === 'addProject' && <AddProjectModal clients={clients} services={services} editors={editors} onClose={() => setModal(null)} onCreate={async (p, t) => { await createProject(p, t); setModal(null); }} />}
+      {modal?.type === 'editProject' && <EditProjectModal project={modal.project} clients={clients} services={services} onClose={() => setModal(null)} onSave={async (u) => { await updateProject(modal.project.id, u); setModal(null); }} onAddTask={async (t) => { await db.createTask({ ...t, project_id: modal.project.id }); await refreshData(); }} onDeleteTask={async (taskId) => { await db.deleteTask(taskId); await refreshData(); }} />}
       {modal?.type === 'addRevision' && <AddRevisionModal serviceTypes={modal.serviceTypes} onClose={() => setModal(null)} onSave={async (d) => { await addRevision(modal.project.id, d); setModal(null); }} />}
       {modal?.type === 'editRevision' && <EditRevisionModal revision={modal.revision} serviceTypes={modal.serviceTypes} onClose={() => setModal(null)} onSave={async (d) => { await updateRevision(modal.revision.id, d); setModal(null); }} onDelete={async () => { await deleteRevision(modal.revision.id); setModal(null); }} />}
       {modal?.type === 'editNotes' && <EditNotesModal client={modal.client} onClose={() => setModal(null)} onSave={async (n) => { await updateClientNotes(modal.client.id, n); setModal(null); }} />}
@@ -1630,30 +1629,259 @@ function DatabaseModal({ tab, item, onClose, onSave }) {
   );
 }
 
-function AddProjectModal({ clients, services, onClose, onCreate }) {
-  const [form, setForm] = useState({ name: '', client_id: '', due_date: '', selectedServices: [] });
+function AddProjectModal({ clients, services, editors, onClose, onCreate }) {
+  const [form, setForm] = useState({ 
+    name: '', 
+    client_id: '', 
+    due_date: '', 
+    selectedServices: [],
+    editor_id: '',
+    editor_due_date: '',
+    editor_notes: ''
+  });
   const hasSitePlan = form.selectedServices.some(sn => services.find(s => s.name === sn)?.tasks.some(t => t.toLowerCase().includes('site plan')));
   const previewTasks = form.selectedServices.flatMap(sn => services.find(s => s.name === sn)?.tasks || []);
   const filteredTasks = hasSitePlan ? previewTasks.filter(t => !(t.toLowerCase().includes('floor plan') && t.toLowerCase().includes('client'))) : previewTasks;
+  const editorTasks = filteredTasks.filter(t => t.toLowerCase().includes('editor'));
+  
   const create = () => {
     if (!form.name || !form.client_id || !form.due_date || !form.selectedServices.length) { alert('Fill all fields'); return; }
     const serviceTypes = [...new Set(filteredTasks.map(t => { const m = t.match(/Submit (.+?) to (editor|client)/i); return m ? m[1] : null; }).filter(Boolean))];
-    const tasks = filteredTasks.map(tt => ({ text: tt, is_editor_task: tt.toLowerCase().includes('editor'), is_client_task: tt.toLowerCase().includes('client') }));
+    const tasks = filteredTasks.map(tt => {
+      const isEditorTask = tt.toLowerCase().includes('editor');
+      return { 
+        text: tt, 
+        is_editor_task: isEditorTask, 
+        is_client_task: tt.toLowerCase().includes('client'),
+        // Add editor info to editor tasks if editor is selected
+        ...(isEditorTask && form.editor_id ? {
+          editor_id: form.editor_id,
+          editor_due_date: form.editor_due_date || form.due_date,
+          editor_notes: form.editor_notes,
+          assigned_at: new Date().toISOString()
+        } : {})
+      };
+    });
     onCreate({ name: form.name, client_id: form.client_id, due_date: form.due_date, services: form.selectedServices, service_types: serviceTypes }, tasks);
   };
+  
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-auto"><div className="p-4 border-b flex justify-between"><h2 className="text-lg font-bold">New Project</h2><button onClick={onClose} className="text-2xl text-gray-400">&times;</button></div><div className="p-4 space-y-4"><div className="grid grid-cols-1 sm:grid-cols-2 gap-4"><div><label className="block text-sm font-medium mb-1">Project Name</label><input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div><div><label className="block text-sm font-medium mb-1">Client</label><select value={form.client_id} onChange={e => setForm({ ...form, client_id: e.target.value })} className="w-full border rounded-lg px-3 py-2"><option value="">Select...</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div></div><div><label className="block text-sm font-medium mb-1">Due Date</label><input type="date" value={form.due_date} onChange={e => setForm({ ...form, due_date: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div><div><label className="block text-sm font-medium mb-2">Services</label><div className="grid grid-cols-2 gap-2">{services.map(s => <label key={s.id} className={`flex items-center gap-2 p-2 rounded-lg border-2 cursor-pointer ${form.selectedServices.includes(s.name) ? 'border-purple-400 bg-purple-50' : 'border-gray-200'}`}><input type="checkbox" checked={form.selectedServices.includes(s.name)} onChange={e => setForm({ ...form, selectedServices: e.target.checked ? [...form.selectedServices, s.name] : form.selectedServices.filter(x => x !== s.name) })} className="w-4 h-4" /><span className="text-sm">{s.name}</span></label>)}</div></div>{filteredTasks.length > 0 && <div className="bg-blue-50 border border-blue-200 rounded-lg p-3"><p className="text-sm font-medium text-blue-800 mb-2">📋 This will create:</p><ul className="text-xs text-blue-700 space-y-1 max-h-40 overflow-auto">{filteredTasks.map((t, i) => <li key={i}>• {t}</li>)}</ul>{hasSitePlan && <p className="text-xs text-orange-600 mt-2">ℹ️ Floor Plan client upload removed (Site Plan replaces it)</p>}</div>}<button onClick={create} className="w-full bg-purple-600 text-white py-3 rounded-lg font-medium">Create Project</button></div></div></div>
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-auto">
+        <div className="p-4 border-b flex justify-between">
+          <h2 className="text-lg font-bold">New Project</h2>
+          <button onClick={onClose} className="text-2xl text-gray-400">&times;</button>
+        </div>
+        <div className="p-4 space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium mb-1">Project Name *</label>
+              <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full border rounded-lg px-3 py-2" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Client *</label>
+              <select value={form.client_id} onChange={e => setForm({ ...form, client_id: e.target.value })} className="w-full border rounded-lg px-3 py-2">
+                <option value="">Select...</option>
+                {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium mb-1">Due Date *</label>
+            <input type="date" value={form.due_date} onChange={e => setForm({ ...form, due_date: e.target.value })} className="w-full border rounded-lg px-3 py-2" />
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium mb-2">Services *</label>
+            <div className="grid grid-cols-2 gap-2">
+              {services.map(s => (
+                <label key={s.id} className={`flex items-center gap-2 p-2 rounded-lg border-2 cursor-pointer ${form.selectedServices.includes(s.name) ? 'border-purple-400 bg-purple-50' : 'border-gray-200'}`}>
+                  <input type="checkbox" checked={form.selectedServices.includes(s.name)} onChange={e => setForm({ ...form, selectedServices: e.target.checked ? [...form.selectedServices, s.name] : form.selectedServices.filter(x => x !== s.name) })} className="w-4 h-4" />
+                  <span className="text-sm">{s.name}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          
+          {/* Editor Assignment Section - only show if there are editor tasks */}
+          {editorTasks.length > 0 && (
+            <div className="border-t pt-4">
+              <h3 className="text-sm font-semibold text-gray-700 mb-3">🎬 Editor Assignment (Optional)</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">Assign to Editor</label>
+                  <select value={form.editor_id} onChange={e => setForm({ ...form, editor_id: e.target.value })} className="w-full border rounded-lg px-3 py-2">
+                    <option value="">Select editor (optional)...</option>
+                    {editors.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Editor Due Date</label>
+                  <input 
+                    type="date" 
+                    value={form.editor_due_date} 
+                    onChange={e => setForm({ ...form, editor_due_date: e.target.value })} 
+                    className="w-full border rounded-lg px-3 py-2" 
+                    disabled={!form.editor_id}
+                  />
+                </div>
+              </div>
+              {form.editor_id && (
+                <div className="mt-3">
+                  <label className="block text-sm font-medium mb-1">Notes for Editor</label>
+                  <textarea 
+                    value={form.editor_notes} 
+                    onChange={e => setForm({ ...form, editor_notes: e.target.value })} 
+                    className="w-full border rounded-lg px-3 py-2" 
+                    rows={2}
+                    placeholder="Any special instructions..."
+                  />
+                </div>
+              )}
+              {form.editor_id && (
+                <p className="text-xs text-blue-600 mt-2">ℹ️ {editorTasks.length} editor task{editorTasks.length > 1 ? 's' : ''} will be assigned to {editors.find(e => e.id === form.editor_id)?.name}</p>
+              )}
+            </div>
+          )}
+          
+          {filteredTasks.length > 0 && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+              <p className="text-sm font-medium text-blue-800 mb-2">📋 This will create:</p>
+              <ul className="text-xs text-blue-700 space-y-1 max-h-40 overflow-auto">
+                {filteredTasks.map((t, i) => <li key={i}>• {t}</li>)}
+              </ul>
+              {hasSitePlan && <p className="text-xs text-orange-600 mt-2">ℹ️ Floor Plan client upload removed (Site Plan replaces it)</p>}
+            </div>
+          )}
+          
+          <button onClick={create} className="w-full bg-purple-600 text-white py-3 rounded-lg font-medium">Create Project</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
-function EditProjectModal({ project, clients, services, onClose, onSave }) {
+function EditProjectModal({ project, clients, services, onClose, onSave, onAddTask, onDeleteTask }) {
   const [form, setForm] = useState({ 
     name: project.name, 
     due_date: project.due_date, 
     client_id: project.client_id,
     services: project.services || []
   });
-  return <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-auto"><div className="p-4 border-b flex justify-between"><h2 className="text-lg font-bold">Edit Project</h2><button onClick={onClose} className="text-2xl text-gray-400">&times;</button></div><div className="p-4 space-y-4"><div><label className="block text-sm font-medium mb-1">Name</label><input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div><div><label className="block text-sm font-medium mb-1">Due Date</label><input type="date" value={form.due_date} onChange={e => setForm({ ...form, due_date: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div><div><label className="block text-sm font-medium mb-1">Client</label><select value={form.client_id || ''} onChange={e => setForm({ ...form, client_id: e.target.value || null })} className={`w-full border rounded-lg px-3 py-2 ${!form.client_id ? 'border-red-300 bg-red-50' : ''}`}><option value="">Select client...</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>{!form.client_id && <p className="text-xs text-red-500 mt-1">⚠️ Please assign a client</p>}</div><div><label className="block text-sm font-medium mb-2">Services</label><div className="grid grid-cols-2 gap-2 max-h-40 overflow-auto">{services.map(s => <label key={s.id} className={`flex items-center gap-2 p-2 rounded-lg border-2 cursor-pointer text-sm ${form.services.includes(s.name) ? 'border-purple-400 bg-purple-50' : 'border-gray-200'}`}><input type="checkbox" checked={form.services.includes(s.name)} onChange={e => setForm({ ...form, services: e.target.checked ? [...form.services, s.name] : form.services.filter(x => x !== s.name) })} className="w-4 h-4" /><span>{s.name}</span></label>)}</div><p className="text-xs text-gray-400 mt-1">Note: Changing services won't add/remove tasks</p></div><button onClick={() => onSave(form)} className="w-full bg-purple-600 text-white py-3 rounded-lg font-medium">Save</button></div></div></div>;
+  const [tasks, setTasks] = useState(project.tasks || []);
+  const [newTaskText, setNewTaskText] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [saving, setSaving] = useState(false);
+  
+  const handleAddTask = async () => {
+    if (!newTaskText.trim()) return;
+    setSaving(true);
+    try {
+      await onAddTask({ 
+        text: newTaskText, 
+        is_editor_task: newTaskText.toLowerCase().includes('editor'),
+        is_client_task: newTaskText.toLowerCase().includes('client')
+      });
+      setNewTaskText('');
+      // Refresh will happen from parent
+    } catch (e) {
+      alert('Failed to add task');
+    }
+    setSaving(false);
+  };
+  
+  const handleDeleteTask = async (taskId) => {
+    setSaving(true);
+    try {
+      await onDeleteTask(taskId);
+      setTasks(prev => prev.filter(t => t.id !== taskId));
+      setConfirmDelete(null);
+    } catch (e) {
+      alert('Failed to delete task');
+    }
+    setSaving(false);
+  };
+  
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] overflow-auto">
+        <div className="p-4 border-b flex justify-between">
+          <h2 className="text-lg font-bold">Edit Project</h2>
+          <button onClick={onClose} className="text-2xl text-gray-400">&times;</button>
+        </div>
+        <div className="p-4 space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Name</label>
+            <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full border rounded-lg px-3 py-2" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Due Date</label>
+            <input type="date" value={form.due_date} onChange={e => setForm({ ...form, due_date: e.target.value })} className="w-full border rounded-lg px-3 py-2" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Client</label>
+            <select value={form.client_id || ''} onChange={e => setForm({ ...form, client_id: e.target.value || null })} className={`w-full border rounded-lg px-3 py-2 ${!form.client_id ? 'border-red-300 bg-red-50' : ''}`}>
+              <option value="">Select client...</option>
+              {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+            {!form.client_id && <p className="text-xs text-red-500 mt-1">⚠️ Please assign a client</p>}
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-2">Services</label>
+            <div className="grid grid-cols-2 gap-2 max-h-32 overflow-auto">
+              {services.map(s => (
+                <label key={s.id} className={`flex items-center gap-2 p-2 rounded-lg border-2 cursor-pointer text-sm ${form.services.includes(s.name) ? 'border-purple-400 bg-purple-50' : 'border-gray-200'}`}>
+                  <input type="checkbox" checked={form.services.includes(s.name)} onChange={e => setForm({ ...form, services: e.target.checked ? [...form.services, s.name] : form.services.filter(x => x !== s.name) })} className="w-4 h-4" />
+                  <span>{s.name}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          
+          {/* Tasks Section */}
+          <div className="border-t pt-4">
+            <label className="block text-sm font-medium mb-2">📋 Tasks ({tasks.length})</label>
+            <div className="space-y-2 max-h-48 overflow-auto">
+              {tasks.map(t => (
+                <div key={t.id} className={`flex items-center justify-between p-2 rounded-lg border ${t.completed ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'}`}>
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-sm truncate ${t.completed ? 'line-through text-gray-400' : ''}`}>{t.text}</p>
+                    <div className="flex gap-1 mt-1">
+                      {t.is_editor_task && <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">Editor</span>}
+                      {t.is_client_task && <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Client</span>}
+                    </div>
+                  </div>
+                  {confirmDelete === t.id ? (
+                    <div className="flex items-center gap-1 ml-2">
+                      <button onClick={() => handleDeleteTask(t.id)} disabled={saving} className="text-xs bg-red-600 text-white px-2 py-1 rounded">Delete</button>
+                      <button onClick={() => setConfirmDelete(null)} className="text-xs border px-2 py-1 rounded">Cancel</button>
+                    </div>
+                  ) : (
+                    <button onClick={() => setConfirmDelete(t.id)} className="text-red-400 hover:text-red-600 text-sm ml-2">🗑️</button>
+                  )}
+                </div>
+              ))}
+            </div>
+            
+            {/* Add new task */}
+            <div className="flex gap-2 mt-3">
+              <input 
+                value={newTaskText} 
+                onChange={e => setNewTaskText(e.target.value)} 
+                placeholder="Add new task..."
+                className="flex-1 border rounded-lg px-3 py-2 text-sm"
+                onKeyDown={e => e.key === 'Enter' && handleAddTask()}
+              />
+              <button onClick={handleAddTask} disabled={saving || !newTaskText.trim()} className="bg-blue-600 text-white px-3 py-2 rounded-lg text-sm disabled:opacity-50">+ Add</button>
+            </div>
+          </div>
+          
+          <button onClick={() => onSave(form)} className="w-full bg-purple-600 text-white py-3 rounded-lg font-medium">Save Project</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function AddRevisionModal({ serviceTypes, onClose, onSave }) {
