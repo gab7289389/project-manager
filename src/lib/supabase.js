@@ -217,15 +217,19 @@ export const markMagicLinkAccessed = async (token) => {
 };
 
 // =============================================
-// FILE STORAGE - Uploads via Vercel API routes
+// FILE STORAGE - Direct upload to Bunny Storage
 // =============================================
 
-const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB chunks (under Vercel 4.5MB limit)
+const CHUNK_SIZE = 50 * 1024 * 1024; // 50MB chunks - no proxy limit!
 const PARALLEL_CHUNKS = 6; // 6 parallel uploads
 const MAX_RETRIES = 10;
 const RETRY_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000, 30000, 30000, 30000, 30000];
 
-const BUNNY_CDN_URL = process.env.NEXT_PUBLIC_BUNNY_CDN_URL || 'https://dxtr-staging.b-cdn.net';
+// Direct Bunny Storage config - API key exposed (internal tool only!)
+const BUNNY_STORAGE_HOST = 'https://syd.storage.bunnycdn.com';
+const BUNNY_STORAGE_ZONE = 'dxtr-staging';
+const BUNNY_API_KEY = '8075c367-6712-48c4-a7a5f328e971-f829-4873';
+const BUNNY_CDN_URL = 'https://dxtr-staging.b-cdn.net';
 
 // Wait for network
 function waitForOnline() {
@@ -243,7 +247,7 @@ function generateUploadId(file, projectId) {
   return `${projectId}_${file.name}_${file.size}_${file.lastModified}`.replace(/[^a-zA-Z0-9_]/g, '_');
 }
 
-// Upload single chunk with retry
+// Upload single chunk with retry - DIRECT to Bunny Storage
 async function uploadChunkWithRetry(uploadId, fileName, chunkIndex, totalChunks, chunkBlob, onProgress, onStatusChange) {
   let retries = 0;
   
@@ -258,6 +262,8 @@ async function uploadChunkWithRetry(uploadId, fileName, chunkIndex, totalChunks,
     try {
       return await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
+        const chunkFileName = `${fileName}.chunk${chunkIndex}`;
+        const storageUrl = `${BUNNY_STORAGE_HOST}/${BUNNY_STORAGE_ZONE}/${chunkFileName}`;
         
         xhr.upload.addEventListener('progress', (e) => {
           if (e.lengthComputable && onProgress) {
@@ -267,11 +273,7 @@ async function uploadChunkWithRetry(uploadId, fileName, chunkIndex, totalChunks,
         
         xhr.addEventListener('load', () => {
           if (xhr.status >= 200 && xhr.status < 300) {
-            try {
-              resolve(JSON.parse(xhr.responseText));
-            } catch {
-              resolve({ success: true });
-            }
+            resolve({ success: true, chunkIndex, url: `${BUNNY_CDN_URL}/${chunkFileName}` });
           } else {
             reject(new Error(`HTTP ${xhr.status}`));
           }
@@ -281,11 +283,9 @@ async function uploadChunkWithRetry(uploadId, fileName, chunkIndex, totalChunks,
         xhr.addEventListener('timeout', () => reject(new Error('Timeout')));
         xhr.timeout = 300000; // 5 min timeout per chunk
         
-        xhr.open('POST', '/api/upload-chunk');
-        xhr.setRequestHeader('X-Upload-Id', uploadId);
-        xhr.setRequestHeader('X-File-Name', encodeURIComponent(fileName));
-        xhr.setRequestHeader('X-Chunk-Index', chunkIndex.toString());
-        xhr.setRequestHeader('X-Total-Chunks', totalChunks.toString());
+        xhr.open('PUT', storageUrl);
+        xhr.setRequestHeader('AccessKey', BUNNY_API_KEY);
+        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
         xhr.send(chunkBlob);
       });
     } catch (error) {
@@ -466,14 +466,9 @@ async function uploadSmallFile(fileName, file, onProgress, onStatusChange) {
         
         xhr.addEventListener('load', () => {
           if (xhr.status >= 200 && xhr.status < 300) {
-            try {
-              const result = JSON.parse(xhr.responseText);
-              onProgress?.(100, 0, 0);
-              onStatusChange?.('complete', 'Upload complete');
-              resolve({ fileName: file.name, fileUrl: result.url });
-            } catch {
-              reject(new Error('Invalid response'));
-            }
+            onProgress?.(100, 0, 0);
+            onStatusChange?.('complete', 'Upload complete');
+            resolve({ fileName: file.name, fileUrl: `${BUNNY_CDN_URL}/${fileName}` });
           } else {
             reject(new Error(`HTTP ${xhr.status}`));
           }
@@ -482,8 +477,10 @@ async function uploadSmallFile(fileName, file, onProgress, onStatusChange) {
         xhr.addEventListener('error', () => reject(new Error('Network error')));
         xhr.timeout = 300000;
         
-        xhr.open('POST', '/api/upload');
-        xhr.setRequestHeader('X-File-Name', encodeURIComponent(fileName));
+        const storageUrl = `${BUNNY_STORAGE_HOST}/${BUNNY_STORAGE_ZONE}/${fileName}`;
+        xhr.open('PUT', storageUrl);
+        xhr.setRequestHeader('AccessKey', BUNNY_API_KEY);
+        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
         xhr.send(file);
       });
     } catch (error) {
@@ -627,17 +624,21 @@ export const deleteFile = async (fileUrl) => {
       const basePath = url.pathname.replace(/^\//, '');
       
       for (let i = 0; i < totalChunks; i++) {
-        await fetch('/api/delete-file', {
+        const storageUrl = `${BUNNY_STORAGE_HOST}/${BUNNY_STORAGE_ZONE}/${basePath}.chunk${i}`;
+        await fetch(storageUrl, {
           method: 'DELETE',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ filePath: `${basePath}.chunk${i}` }),
+          headers: { 'AccessKey': BUNNY_API_KEY },
         });
       }
     } else {
-      await fetch('/api/delete-file', {
+      let filePath = fileUrl;
+      if (filePath.startsWith('http')) {
+        filePath = new URL(filePath).pathname.replace(/^\//, '');
+      }
+      const storageUrl = `${BUNNY_STORAGE_HOST}/${BUNNY_STORAGE_ZONE}/${filePath}`;
+      await fetch(storageUrl, {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filePath: fileUrl }),
+        headers: { 'AccessKey': BUNNY_API_KEY },
       });
     }
   } catch (error) {
