@@ -734,17 +734,16 @@ function EditorPortalDashboard({ editorId, editorName }) {
     setUploading(taskId);
     try {
       const result = await db.uploadEditorFile(projectId, file);
+      // Only update columns that exist - file_url, file_name, status
       await db.updateTask(taskId, { 
         file_url: result.fileUrl,
         file_name: file.name,
-        editor_submitted_at: new Date().toISOString(),
         status: 'pending_review'
       });
       setTasks(prev => prev.map(t => t.id === taskId ? { 
         ...t, 
         file_url: result.fileUrl, 
         file_name: file.name,
-        editor_submitted_at: new Date().toISOString(),
         status: 'pending_review'
       } : t));
       alert('✅ File uploaded! Waiting for admin review.');
@@ -1646,15 +1645,17 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                                 {editorTasks.map(t => {
                                   const label = t.text.replace('Submit ', '').replace(' to editor', '');
-                                  const isPendingReview = (t.status === 'pending_review' || t.editor_submitted_at) && !t.completed && t.status !== 'rejected';
-                                  const isRejected = t.status === 'rejected';
-                                  const isCompleted = t.completed;
-                                  const isAwaiting = !isCompleted && !isPendingReview && !isRejected;
+                                  const isBypassed = t.editor_bypass;
+                                  const isPendingReview = (t.status === 'pending_review' || t.editor_submitted_at) && !t.completed && t.status !== 'rejected' && !isBypassed;
+                                  const isRejected = t.status === 'rejected' && !isBypassed;
+                                  const isCompleted = t.completed && !isBypassed;
+                                  const isAwaiting = !isCompleted && !isPendingReview && !isRejected && !isBypassed;
                                   
                                   return (
                                     <div 
                                       key={t.id} 
                                       className={`p-4 rounded-xl border-2 ${
+                                        isBypassed ? 'bg-gray-100 border-gray-300' :
                                         isPendingReview ? 'bg-yellow-50 border-yellow-300' :
                                         isRejected ? 'bg-red-50 border-red-300' :
                                         isCompleted ? 'bg-green-50 border-green-200' :
@@ -1664,21 +1665,36 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                                       {/* Header */}
                                       <div className="flex items-start justify-between gap-2 mb-3">
                                         <div>
-                                          <span className="font-medium text-gray-900">{label}</span>
-                                          {t.editor_id && <p className="text-xs text-purple-600 mt-0.5">Assigned: {editors.find(e => e.id === t.editor_id)?.name}</p>}
+                                          <span className={`font-medium ${isBypassed ? 'text-gray-400 line-through' : 'text-gray-900'}`}>{label}</span>
+                                          {t.editor_id && !isBypassed && <p className="text-xs text-purple-600 mt-0.5">Assigned: {editors.find(e => e.id === t.editor_id)?.name}</p>}
                                         </div>
                                         <span className={`text-xs px-2 py-1 rounded-full font-medium ${
+                                          isBypassed ? 'bg-gray-200 text-gray-600' :
                                           isPendingReview ? 'bg-yellow-200 text-yellow-800' :
                                           isRejected ? 'bg-red-200 text-red-800' :
                                           isCompleted ? 'bg-green-200 text-green-800' :
                                           t.editor_id ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'
                                         }`}>
-                                          {isPendingReview ? '⏳ Review' :
+                                          {isBypassed ? '⚡ Bypassed' :
+                                           isPendingReview ? '⏳ Review' :
                                            isRejected ? '⚠️ Revision' :
                                            isCompleted ? '✓ Approved' :
                                            t.editor_id ? '🎬 In Progress' : 'Unassigned'}
                                         </span>
                                       </div>
+                                      
+                                      {/* Bypassed state - show undo button */}
+                                      {isBypassed && (
+                                        <div className="flex items-center justify-between">
+                                          <span className="text-xs text-gray-500">Editor step skipped</span>
+                                          <button 
+                                            onClick={() => handleEditorBypass(project.id, t.id, false)} 
+                                            className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+                                          >
+                                            ↩ Undo Bypass
+                                          </button>
+                                        </div>
+                                      )}
                                       
                                       {/* Rejection notes */}
                                       {isRejected && t.rejection_notes && (
@@ -1720,20 +1736,30 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                                       {isAwaiting && !t.file_url && (
                                         <div className="space-y-2">
                                           {/* Raw files indicator */}
-                                          {t.raw_files && t.raw_files.length > 0 && (
+                                          {t.raw_files && t.raw_files.length > 0 ? (
                                             <p className="text-xs text-gray-500">📁 {t.raw_files.length} raw file{t.raw_files.length > 1 ? 's' : ''} attached</p>
-                                          )}
+                                          ) : t.editor_id ? (
+                                            <p className="text-xs text-amber-600">⚠️ No raw files yet</p>
+                                          ) : null}
                                           
                                           {/* Actions */}
-                                          <div className="flex items-center justify-between">
+                                          <div className="flex items-center justify-between gap-2">
                                             {!t.editor_id ? (
                                               <button onClick={() => setModal({ type: 'assignEditor', task: t, project, client })} className="text-sm font-medium text-blue-600 hover:text-blue-800">
                                                 + Assign Editor
                                               </button>
                                             ) : (
-                                              <span className="text-xs text-gray-400">Waiting for editor</span>
+                                              <div className="flex items-center gap-2">
+                                                <span className="text-xs text-gray-400">Waiting for editor</span>
+                                                <button 
+                                                  onClick={() => setModal({ type: 'assignEditor', task: t, project, client })} 
+                                                  className="text-xs text-blue-600 hover:text-blue-800"
+                                                >
+                                                  ✏️ Edit
+                                                </button>
+                                              </div>
                                             )}
-                                            <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer">
+                                            <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer hover:text-gray-600">
                                               <input type="checkbox" checked={t.editor_bypass || false} onChange={(e) => handleEditorBypass(project.id, t.id, e.target.checked)} className="w-3 h-3" />
                                               Bypass
                                             </label>
@@ -2544,7 +2570,8 @@ function AssignEditorModal({ task, project, client, editors, assets, onClose, on
           
           {/* Raw Files Upload */}
           <div>
-            <label className="block text-sm font-medium mb-2">Raw Files</label>
+            <label className="block text-sm font-medium mb-1">Raw Files <span className="text-gray-400 font-normal">(optional - can add later)</span></label>
+            <p className="text-xs text-gray-500 mb-2">Editor will see this task on their dashboard even without raw files</p>
             <div 
               className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center cursor-pointer hover:bg-gray-50 transition-colors"
               onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('border-blue-500', 'bg-blue-50'); }}
