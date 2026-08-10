@@ -262,7 +262,7 @@ async function uploadChunkWithRetry(uploadId, fileName, chunkIndex, totalChunks,
     try {
       return await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        const chunkFileName = `${fileName}.chunk${chunkIndex}`;
+        const chunkFileName = `${fileName}_chunk${chunkIndex}.bin`;
         const storageUrl = `${BUNNY_STORAGE_HOST}/${BUNNY_STORAGE_ZONE}/${chunkFileName}`;
         
         xhr.upload.addEventListener('progress', (e) => {
@@ -557,7 +557,7 @@ export async function downloadChunkedFile(fileUrl, onProgress) {
           
           (async () => {
             try {
-              const chunkUrl = `${url.origin}${basePath}.chunk${chunkIndex}`;
+              const chunkUrl = `${url.origin}${basePath}_chunk${chunkIndex}.bin`;
               const response = await fetch(chunkUrl);
               if (!response.ok) throw new Error(`HTTP ${response.status}`);
               
@@ -569,7 +569,7 @@ export async function downloadChunkedFile(fileUrl, onProgress) {
               console.error(`Chunk ${chunkIndex} failed:`, error);
               // Retry once
               try {
-                const chunkUrl = `${url.origin}${basePath}.chunk${chunkIndex}`;
+                const chunkUrl = `${url.origin}${basePath}_chunk${chunkIndex}.bin`;
                 const response = await fetch(chunkUrl);
                 const blob = await response.blob();
                 chunks[chunkIndex] = blob;
@@ -624,7 +624,7 @@ export const deleteFile = async (fileUrl) => {
       const basePath = url.pathname.replace(/^\//, '');
       
       for (let i = 0; i < totalChunks; i++) {
-        const storageUrl = `${BUNNY_STORAGE_HOST}/${BUNNY_STORAGE_ZONE}/${basePath}.chunk${i}`;
+        const storageUrl = `${BUNNY_STORAGE_HOST}/${BUNNY_STORAGE_ZONE}/${basePath}_chunk${i}.bin`;
         await fetch(storageUrl, {
           method: 'DELETE',
           headers: { 'AccessKey': BUNNY_API_KEY },
