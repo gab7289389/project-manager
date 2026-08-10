@@ -63,19 +63,42 @@ export const deleteService = async (id) => {
 
 // EDITORS
 export const getEditors = async () => {
-  const { data, error } = await supabase.from('editors').select('*').order('name');
+  const { data, error } = await supabase.from('editors').select('id, username, name, email, is_active, created_at').order('name');
   if (error) throw error;
   return data;
 };
 
 export const createEditor = async (editor) => {
-  const { data, error } = await supabase.from('editors').insert(editor).select().single();
+  // Use database function to hash password
+  const { data, error } = await supabase.rpc('hash_editor_password', { password: editor.password });
   if (error) throw error;
-  return data;
+  
+  const { data: newEditor, error: insertError } = await supabase
+    .from('editors')
+    .insert({
+      username: editor.username,
+      password_hash: data,
+      name: editor.name,
+      email: editor.email,
+      is_active: true
+    })
+    .select('id, username, name, email, is_active, created_at')
+    .single();
+  if (insertError) throw insertError;
+  return newEditor;
 };
 
 export const updateEditor = async (id, updates) => {
-  const { data, error } = await supabase.from('editors').update(updates).eq('id', id).select().single();
+  // If password is being updated, hash it first
+  let updateData = { ...updates };
+  if (updates.password) {
+    const { data: hash, error: hashError } = await supabase.rpc('hash_editor_password', { password: updates.password });
+    if (hashError) throw hashError;
+    updateData = { ...updates, password_hash: hash };
+    delete updateData.password;
+  }
+  
+  const { data, error } = await supabase.from('editors').update(updateData).eq('id', id).select('id, username, name, email, is_active, created_at').single();
   if (error) throw error;
   return data;
 };
@@ -83,6 +106,51 @@ export const updateEditor = async (id, updates) => {
 export const deleteEditor = async (id) => {
   const { error } = await supabase.from('editors').delete().eq('id', id);
   if (error) throw error;
+};
+
+// EDITOR AUTH
+export const loginEditor = async (username, password) => {
+  const { data, error } = await supabase.rpc('verify_editor_password', {
+    input_username: username,
+    input_password: password
+  });
+  if (error) throw error;
+  if (!data || data.length === 0) return null;
+  return data[0]; // { editor_id, editor_name, session_token }
+};
+
+export const getEditorFromToken = async (token) => {
+  const { data, error } = await supabase.rpc('get_editor_from_token', {
+    input_token: token
+  });
+  if (error) throw error;
+  if (!data || data.length === 0) return null;
+  return data[0]; // { editor_id, editor_name, editor_username }
+};
+
+export const logoutEditor = async (token) => {
+  const { error } = await supabase.from('editor_sessions').delete().eq('token', token);
+  if (error) throw error;
+};
+
+// Get tasks assigned to an editor
+export const getEditorTasks = async (editorId) => {
+  const { data, error } = await supabase
+    .from('tasks')
+    .select(`
+      *,
+      project:projects(
+        id,
+        name,
+        due_date,
+        client:clients(id, name)
+      )
+    `)
+    .eq('editor_id', editorId)
+    .eq('is_editor_task', true)
+    .order('editor_due_date');
+  if (error) throw error;
+  return data;
 };
 
 // PROJECTS
@@ -649,3 +717,277 @@ export const deleteFile = async (fileUrl) => {
 // Legacy exports
 export function getPendingUploads() { return []; }
 export function clearPendingUpload() {}
+
+// =============================================
+// DELETE INDIVIDUAL TASK
+// =============================================
+export const deleteTask = async (taskId, fileUrl = null) => {
+  // If task has a file, delete it from storage first
+  if (fileUrl && fileUrl !== 'uploading') {
+    try {
+      await deleteFile(fileUrl);
+    } catch (e) {
+      console.error('Failed to delete task file:', e);
+    }
+  }
+  
+  const { error } = await supabase.from('tasks').delete().eq('id', taskId);
+  if (error) throw error;
+};
+
+// =============================================
+// REAL-TIME SUBSCRIPTIONS
+// =============================================
+export const subscribeToProjects = (callback) => {
+  const channel = supabase
+    .channel('projects-realtime')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'projects' }, callback)
+    .subscribe();
+  
+  return () => supabase.removeChannel(channel);
+};
+
+export const subscribeToTasks = (callback) => {
+  const channel = supabase
+    .channel('tasks-realtime')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, callback)
+    .subscribe();
+  
+  return () => supabase.removeChannel(channel);
+};
+
+export const subscribeToAll = (onProjectChange, onTaskChange, onClientChange, onEditorChange) => {
+  const channel = supabase
+    .channel('all-changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'projects' }, onProjectChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, onTaskChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'clients' }, onClientChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'editors' }, onEditorChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'revisions' }, onProjectChange) // Revisions affect projects
+    .subscribe();
+  
+  return () => supabase.removeChannel(channel);
+};
+
+// =============================================
+// ASSETS (Client brand assets: images, videos, fonts)
+// =============================================
+export const getAssets = async (clientId = null) => {
+  let query = supabase.from('client_assets').select('*').order('created_at', { ascending: false });
+  if (clientId) {
+    query = query.eq('client_id', clientId);
+  }
+  const { data, error } = await query;
+  if (error) throw error;
+  return data;
+};
+
+export const createAsset = async (asset) => {
+  const { data, error } = await supabase.from('client_assets').insert(asset).select().single();
+  if (error) throw error;
+  return data;
+};
+
+export const deleteAsset = async (assetId, fileUrl) => {
+  // Delete file from storage
+  if (fileUrl) {
+    try {
+      await deleteFile(fileUrl);
+    } catch (e) {
+      console.error('Failed to delete asset file:', e);
+    }
+  }
+  
+  const { error } = await supabase.from('client_assets').delete().eq('id', assetId);
+  if (error) throw error;
+};
+
+export const getTaskAssets = async (taskId) => {
+  const { data, error } = await supabase
+    .from('task_assets')
+    .select('*, asset:client_assets(*)')
+    .eq('task_id', taskId);
+  if (error) throw error;
+  return data?.map(ta => ta.asset) || [];
+};
+
+export const linkAssetToTask = async (taskId, assetId) => {
+  const { data, error } = await supabase
+    .from('task_assets')
+    .insert({ task_id: taskId, asset_id: assetId })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+};
+
+export const unlinkAssetFromTask = async (taskId, assetId) => {
+  const { error } = await supabase
+    .from('task_assets')
+    .delete()
+    .eq('task_id', taskId)
+    .eq('asset_id', assetId);
+  if (error) throw error;
+};
+
+// =============================================
+// EDITOR ASSIGNMENT
+// =============================================
+export const assignTaskToEditor = async (taskId, editorId, dueDate, notes = '', rawFiles = []) => {
+  const { data, error } = await supabase
+    .from('tasks')
+    .update({
+      editor_id: editorId,
+      editor_due_date: dueDate,
+      editor_notes: notes,
+      raw_files: rawFiles,
+      assigned_at: new Date().toISOString()
+    })
+    .eq('id', taskId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+};
+
+export const submitToEditor = async (taskId) => {
+  const { data, error } = await supabase
+    .from('tasks')
+    .update({
+      submitted_to_editor_at: new Date().toISOString()
+    })
+    .eq('id', taskId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+};
+
+export const bypassEditorTask = async (taskId, bypass = true) => {
+  const { data, error } = await supabase
+    .from('tasks')
+    .update({
+      editor_bypass: bypass,
+      completed: bypass
+    })
+    .eq('id', taskId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+};
+
+export const bypassClientTask = async (taskId, bypass = true) => {
+  const { data, error } = await supabase
+    .from('tasks')
+    .update({
+      client_bypass: bypass,
+      completed: bypass,
+      sent: bypass
+    })
+    .eq('id', taskId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+};
+
+// =============================================
+// EDITOR AUTHENTICATION
+// =============================================
+export const getEditorTasks = async (editorId) => {
+  const { data, error } = await supabase
+    .from('tasks')
+    .select(`
+      *,
+      project:projects(*, client:clients(*))
+    `)
+    .eq('editor_id', editorId)
+    .eq('is_editor_task', true)
+    .order('editor_due_date', { ascending: true });
+  if (error) throw error;
+  return data;
+};
+
+// Simple hash function for editor passwords (NOT secure - use bcrypt in production)
+const simpleHash = (str) => {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return hash.toString(16);
+};
+
+export const setEditorPassword = async (editorId, password) => {
+  const passwordHash = simpleHash(password);
+  const { data, error } = await supabase
+    .from('editors')
+    .update({ password_hash: passwordHash })
+    .eq('id', editorId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+};
+
+export const editorLogin = async (email, password) => {
+  const { data: editors, error } = await supabase
+    .from('editors')
+    .select('*')
+    .eq('email', email)
+    .single();
+  
+  if (error || !editors) {
+    throw new Error('Invalid credentials');
+  }
+  
+  const passwordHash = simpleHash(password);
+  if (editors.password_hash !== passwordHash) {
+    throw new Error('Invalid credentials');
+  }
+  
+  // Generate access token
+  const accessToken = Math.random().toString(36).substring(2) + Date.now().toString(36);
+  const tokenExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+  
+  const { data, error: updateError } = await supabase
+    .from('editors')
+    .update({
+      access_token: accessToken,
+      token_expires_at: tokenExpires.toISOString(),
+      last_login_at: new Date().toISOString()
+    })
+    .eq('id', editors.id)
+    .select()
+    .single();
+  
+  if (updateError) throw updateError;
+  return data;
+};
+
+export const validateEditorToken = async (token) => {
+  const { data, error } = await supabase
+    .from('editors')
+    .select('*')
+    .eq('access_token', token)
+    .gt('token_expires_at', new Date().toISOString())
+    .single();
+  
+  if (error || !data) {
+    return null;
+  }
+  return data;
+};
+
+export const editorLogout = async (editorId) => {
+  const { error } = await supabase
+    .from('editors')
+    .update({
+      access_token: null,
+      token_expires_at: null
+    })
+    .eq('id', editorId);
+  if (error) throw error;
+};
