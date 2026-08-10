@@ -240,9 +240,26 @@ function waitForOnline() {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// Generate unique upload ID
+// Generate unique upload ID. Deterministic for a given file so an interrupted
+// upload can resume onto the same chunks instead of starting over.
 function generateUploadId(file, projectId) {
   return `${projectId}_${file.name}_${file.size}_${file.lastModified}`.replace(/[^a-zA-Z0-9_]/g, '_');
+}
+
+// Has this chunk already been uploaded at its full size? Used to resume after a
+// crash or reload. Any uncertainty answers "no" - re-uploading is safe, and
+// wrongly skipping a chunk would corrupt the file.
+async function chunkAlreadyUploaded(fileName, chunkIndex, expectedSize) {
+  try {
+    const response = await fetch(`${BUNNY_CDN_URL}/${fileName}.chunk${chunkIndex}`, {
+      method: 'HEAD',
+      cache: 'no-store',
+    });
+    if (!response.ok) return false;
+    return parseInt(response.headers.get('content-length'), 10) === expectedSize;
+  } catch {
+    return false;
+  }
 }
 
 // Upload single chunk with retry
@@ -304,21 +321,23 @@ async function uploadChunkWithRetry(uploadId, fileName, chunkIndex, totalChunks,
 // Main upload function
 export const uploadFile = async (projectId, file, onProgress, onStatusChange) => {
   const safeFileName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-  const fileName = `${projectId}/${Date.now()}-${safeFileName}`;
-  
+
   if (!UPLOAD_SERVER_URL) {
     throw new Error('Upload server not configured');
   }
-  
+
   // Small files - direct upload
   if (file.size <= CHUNK_SIZE) {
-    return uploadSmallFile(fileName, file, onProgress, onStatusChange);
+    return uploadSmallFile(`${projectId}/${Date.now()}-${safeFileName}`, file, onProgress, onStatusChange);
   }
-  
-  // Large files - parallel chunk upload (no server-side combine)
+
+  // Large files - parallel chunk upload (no server-side combine).
+  // The path is derived from the upload id rather than Date.now() so that a
+  // retry after a crash lands on the same chunks and can resume.
   const uploadId = generateUploadId(file, projectId);
+  const fileName = `${projectId}/${uploadId}-${safeFileName}`;
   const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-  
+
   onStatusChange?.('uploading', 'Uploading...');
   
   // Progress tracking
@@ -355,59 +374,39 @@ export const uploadFile = async (projectId, file, onProgress, onStatusChange) =>
     onProgress?.(Math.min(percent, 99), avgSpeed, eta);
   };
   
-  // Upload all chunks in parallel
-  const uploadQueue = [];
-  for (let i = 0; i < totalChunks; i++) {
-    uploadQueue.push(i);
-  }
-  
-  const activeUploads = new Set();
-  const completedChunks = new Set();
-  const errors = [];
-  
-  await new Promise((resolve, reject) => {
-    const processQueue = async () => {
-      while (uploadQueue.length > 0 || activeUploads.size > 0) {
-        // Start new uploads up to limit
-        while (uploadQueue.length > 0 && activeUploads.size < PARALLEL_CHUNKS) {
-          const chunkIndex = uploadQueue.shift();
-          activeUploads.add(chunkIndex);
-          
-          const start = chunkIndex * CHUNK_SIZE;
-          const end = Math.min(start + CHUNK_SIZE, file.size);
-          const chunk = file.slice(start, end);
-          
-          (async () => {
-            try {
-              await uploadChunkWithRetry(
-                uploadId, fileName, chunkIndex, totalChunks, chunk,
-                (idx, loaded) => updateProgress(idx, loaded),
-                onStatusChange
-              );
-              completedChunks.add(chunkIndex);
-              chunkProgress.set(chunkIndex, end - start);
-              updateProgress(chunkIndex, end - start);
-            } catch (error) {
-              errors.push({ chunkIndex, error });
-            } finally {
-              activeUploads.delete(chunkIndex);
-            }
-          })();
-        }
-        
-        await sleep(50);
+  // Upload all chunks with a fixed-size worker pool. If any chunk exhausts its
+  // retries the whole upload fails - a partial set of chunks is unusable.
+  const uploadQueue = Array.from({ length: totalChunks }, (_, i) => i);
+
+  const uploadWorker = async () => {
+    while (uploadQueue.length > 0) {
+      const chunkIndex = uploadQueue.shift();
+      const start = chunkIndex * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, file.size);
+      const chunkSize = end - start;
+
+      // Resume: skip chunks a previous attempt already uploaded intact.
+      if (await chunkAlreadyUploaded(fileName, chunkIndex, chunkSize)) {
+        chunkProgress.set(chunkIndex, chunkSize);
+        updateProgress(chunkIndex, chunkSize);
+        continue;
       }
-      
-      if (errors.length > 0) {
-        reject(new Error(`Failed to upload ${errors.length} chunks`));
-      } else {
-        resolve();
-      }
-    };
-    
-    processQueue();
-  });
-  
+
+      await uploadChunkWithRetry(
+        uploadId, fileName, chunkIndex, totalChunks, file.slice(start, end),
+        (idx, loaded) => updateProgress(idx, loaded),
+        onStatusChange
+      );
+
+      chunkProgress.set(chunkIndex, chunkSize);
+      updateProgress(chunkIndex, chunkSize);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(PARALLEL_CHUNKS, totalChunks) }, uploadWorker)
+  );
+
   // Store chunk info in the URL (no server-side combine)
   // Format: baseUrl#chunks=N&uploadId=X
   const chunkedUrl = `${BUNNY_CDN_URL}/${fileName}#chunks=${totalChunks}&uploadId=${uploadId}&size=${file.size}&name=${encodeURIComponent(file.name)}`;
@@ -503,151 +502,303 @@ async function uploadSmallFile(fileName, file, onProgress, onStatusChange) {
   }
 }
 
-// Download and combine chunks on client side
-export async function downloadChunkedFile(fileUrl, onProgress) {
-  // Parse chunk info from URL hash
+// =============================================
+// CHUNKED DOWNLOAD - client-side combine
+// =============================================
+
+// Above this size a browser cannot hold the whole file in a Blob. Files larger
+// than this require stream-to-disk (File System Access API, Chrome/Edge only).
+export const MAX_IN_MEMORY_COMBINE = 2 * 1024 * 1024 * 1024; // 2GB
+
+const PARALLEL_DOWNLOADS = 6;
+const DOWNLOAD_RETRIES = 5;
+
+// Check if URL is a chunked file
+export function isChunkedFile(fileUrl) {
+  return !!fileUrl && fileUrl.includes('#chunks=');
+}
+
+// True when the browser can stream a download straight to disk, which is the
+// only way to handle files too large to fit in a Blob.
+export function canStreamToDisk() {
+  return typeof window !== 'undefined' && typeof window.showSaveFilePicker === 'function';
+}
+
+// Parse the chunk manifest encoded in the URL hash:
+//   https://cdn/<path>#chunks=N&uploadId=X&size=B&name=F
+// Returns null when the URL is not a chunked file.
+export function parseChunkedUrl(fileUrl) {
+  if (!isChunkedFile(fileUrl)) return null;
+
   const url = new URL(fileUrl);
-  const hash = url.hash.slice(1);
-  const params = new URLSearchParams(hash);
-  
-  const totalChunks = parseInt(params.get('chunks'));
+  const params = new URLSearchParams(url.hash.slice(1));
+
+  const totalChunks = parseInt(params.get('chunks'), 10);
+  const fileSize = parseInt(params.get('size'), 10);
   const uploadId = params.get('uploadId');
-  const fileSize = parseInt(params.get('size'));
-  const fileName = decodeURIComponent(params.get('name'));
-  const basePath = url.pathname;
-  
-  if (!totalChunks || !uploadId) {
-    // Not a chunked file, download directly
-    window.location.href = fileUrl.split('#')[0];
-    return;
+
+  if (!totalChunks || !uploadId || !Number.isFinite(fileSize)) return null;
+
+  const base = `${url.origin}${url.pathname}`;
+  return {
+    totalChunks,
+    uploadId,
+    fileSize,
+    fileName: decodeURIComponent(params.get('name') || 'download'),
+    chunkUrl: (index) => `${base}.chunk${index}`,
+  };
+}
+
+// Fetch one chunk, retrying on failure. Always verifies the response status —
+// a 404 body would otherwise be spliced into the file as if it were data.
+async function fetchChunk(chunkUrl, index) {
+  let lastError;
+
+  for (let attempt = 0; attempt < DOWNLOAD_RETRIES; attempt++) {
+    if (!navigator.onLine) await waitForOnline();
+
+    try {
+      const response = await fetch(chunkUrl, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return await response.blob();
+    } catch (error) {
+      lastError = error;
+      if (attempt < DOWNLOAD_RETRIES - 1) {
+        await sleep(RETRY_DELAYS[Math.min(attempt, RETRY_DELAYS.length - 1)]);
+      }
+    }
   }
-  
-  // Download all chunks in parallel
-  const chunks = new Array(totalChunks);
+
+  throw new Error(`Chunk ${index} failed after ${DOWNLOAD_RETRIES} attempts: ${lastError?.message}`);
+}
+
+// Tracks download speed and reports percent + bytes/sec.
+function createProgressReporter(fileSize, onProgress) {
   let downloadedBytes = 0;
   let lastTime = Date.now();
   let lastBytes = 0;
-  let speedSamples = [];
-  
-  const updateProgress = () => {
-    const now = Date.now();
-    const timeDiff = (now - lastTime) / 1000;
-    if (timeDiff >= 0.2) {
-      const speed = (downloadedBytes - lastBytes) / timeDiff;
-      speedSamples.push(speed);
-      if (speedSamples.length > 10) speedSamples.shift();
-      lastBytes = downloadedBytes;
-      lastTime = now;
-    }
-    
-    const avgSpeed = speedSamples.length > 0 
-      ? speedSamples.reduce((a, b) => a + b, 0) / speedSamples.length 
-      : 0;
-    
-    const percent = Math.round((downloadedBytes / fileSize) * 100);
-    onProgress?.(percent, avgSpeed);
-  };
-  
-  // Download chunks with concurrency limit
-  const PARALLEL_DOWNLOADS = 6;
-  const downloadQueue = [];
-  for (let i = 0; i < totalChunks; i++) {
-    downloadQueue.push(i);
-  }
-  
-  const activeDownloads = new Set();
-  
-  await new Promise((resolve, reject) => {
-    const processQueue = async () => {
-      while (downloadQueue.length > 0 || activeDownloads.size > 0) {
-        while (downloadQueue.length > 0 && activeDownloads.size < PARALLEL_DOWNLOADS) {
-          const chunkIndex = downloadQueue.shift();
-          activeDownloads.add(chunkIndex);
-          
-          (async () => {
-            try {
-              const chunkUrl = `${url.origin}${basePath}.chunk${chunkIndex}`;
-              const response = await fetch(chunkUrl);
-              if (!response.ok) throw new Error(`HTTP ${response.status}`);
-              
-              const blob = await response.blob();
-              chunks[chunkIndex] = blob;
-              downloadedBytes += blob.size;
-              updateProgress();
-            } catch (error) {
-              console.error(`Chunk ${chunkIndex} failed:`, error);
-              // Retry once
-              try {
-                const chunkUrl = `${url.origin}${basePath}.chunk${chunkIndex}`;
-                const response = await fetch(chunkUrl);
-                const blob = await response.blob();
-                chunks[chunkIndex] = blob;
-                downloadedBytes += blob.size;
-                updateProgress();
-              } catch (e) {
-                reject(new Error(`Failed to download chunk ${chunkIndex}`));
-              }
-            } finally {
-              activeDownloads.delete(chunkIndex);
-            }
-          })();
-        }
-        
-        await sleep(50);
+  const speedSamples = [];
+
+  return {
+    add(bytes) {
+      downloadedBytes += bytes;
+
+      const now = Date.now();
+      const timeDiff = (now - lastTime) / 1000;
+      if (timeDiff >= 0.2) {
+        speedSamples.push((downloadedBytes - lastBytes) / timeDiff);
+        if (speedSamples.length > 10) speedSamples.shift();
+        lastBytes = downloadedBytes;
+        lastTime = now;
       }
-      resolve();
-    };
-    
-    processQueue();
-  });
-  
-  // Combine chunks into single blob
+
+      const avgSpeed = speedSamples.length > 0
+        ? speedSamples.reduce((a, b) => a + b, 0) / speedSamples.length
+        : 0;
+
+      onProgress?.(Math.min(Math.round((downloadedBytes / fileSize) * 100), 100), avgSpeed);
+    },
+    get total() { return downloadedBytes; },
+  };
+}
+
+// Stream chunks straight to a file on disk. Memory stays bounded to the
+// prefetch window (PARALLEL_DOWNLOADS chunks) regardless of file size, so this
+// handles 20GB+. Chrome/Edge desktop only.
+async function streamChunksToDisk(manifest, onProgress, onStatusChange) {
+  const { totalChunks, fileSize, fileName, chunkUrl } = manifest;
+
+  // Must prompt for the save location before any await, or the browser
+  // discards the user-gesture that authorises the picker.
+  const handle = await window.showSaveFilePicker({ suggestedName: fileName });
+  const writable = await handle.createWritable();
+
+  onStatusChange?.('downloading', 'Downloading...');
+  const progress = createProgressReporter(fileSize, onProgress);
+
+  // Fetch ahead of the write cursor, but write strictly in order.
+  const inFlight = new Map();
+  const prefetch = (index) => {
+    if (index < totalChunks && !inFlight.has(index)) {
+      const pending = fetchChunk(chunkUrl(index), index);
+      // An earlier chunk may fail and abort the download before this one is
+      // awaited; swallow the stray rejection without hiding it from the await.
+      pending.catch(() => {});
+      inFlight.set(index, pending);
+    }
+  };
+
+  try {
+    for (let i = 0; i < Math.min(PARALLEL_DOWNLOADS, totalChunks); i++) prefetch(i);
+
+    for (let index = 0; index < totalChunks; index++) {
+      const blob = await inFlight.get(index);
+      inFlight.delete(index);
+      prefetch(index + PARALLEL_DOWNLOADS);
+
+      await writable.write(blob);
+      progress.add(blob.size);
+    }
+
+    if (progress.total !== fileSize) {
+      throw new Error(`Size mismatch: got ${progress.total} bytes, expected ${fileSize}`);
+    }
+
+    await writable.close();
+  } catch (error) {
+    // Discard the partial file rather than leaving a truncated one on disk.
+    await writable.abort().catch(() => {});
+    throw error;
+  }
+
+  return { success: true, fileName, streamed: true };
+}
+
+// Combine chunks in memory, then hand the Blob to the browser. Works on
+// Safari/iOS but is bounded by available memory.
+async function combineChunksInMemory(manifest, onProgress, onStatusChange) {
+  const { totalChunks, fileSize, fileName, chunkUrl } = manifest;
+
+  if (fileSize > MAX_IN_MEMORY_COMBINE) {
+    throw new Error(
+      `This file is ${(fileSize / 1024 / 1024 / 1024).toFixed(1)}GB. ` +
+      'Files over 2GB can only be downloaded in Chrome or Edge on a desktop computer.'
+    );
+  }
+
+  onStatusChange?.('downloading', 'Downloading...');
+  const progress = createProgressReporter(fileSize, onProgress);
+
+  const chunks = new Array(totalChunks);
+  const queue = Array.from({ length: totalChunks }, (_, i) => i);
+
+  const worker = async () => {
+    while (queue.length > 0) {
+      const index = queue.shift();
+      const blob = await fetchChunk(chunkUrl(index), index);
+      chunks[index] = blob;
+      progress.add(blob.size);
+    }
+  };
+
+  // Any worker rejecting fails the whole download, rather than silently
+  // leaving a hole in the combined file.
+  await Promise.all(
+    Array.from({ length: Math.min(PARALLEL_DOWNLOADS, totalChunks) }, worker)
+  );
+
+  if (progress.total !== fileSize) {
+    throw new Error(`Size mismatch: got ${progress.total} bytes, expected ${fileSize}`);
+  }
+
   const combinedBlob = new Blob(chunks, { type: 'application/octet-stream' });
-  
-  // Trigger download
-  const downloadUrl = URL.createObjectURL(combinedBlob);
+  triggerBlobDownload(combinedBlob, fileName);
+
+  return { success: true, fileName, streamed: false };
+}
+
+export function triggerBlobDownload(blob, fileName) {
+  const downloadUrl = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = downloadUrl;
   a.download = fileName;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(downloadUrl);
-  
-  return { success: true };
+  // Revoking immediately can cancel the download in some browsers.
+  setTimeout(() => URL.revokeObjectURL(downloadUrl), 60000);
 }
 
-// Check if URL is a chunked file
-export function isChunkedFile(fileUrl) {
-  return fileUrl && fileUrl.includes('#chunks=');
+// Download a chunked file and reassemble it client-side. Streams to disk when
+// the browser supports it, otherwise combines in memory (2GB ceiling).
+export async function downloadChunkedFile(fileUrl, onProgress, onStatusChange) {
+  const manifest = parseChunkedUrl(fileUrl);
+
+  if (!manifest) {
+    // Not a chunked file - download it directly.
+    window.location.href = fileUrl.split('#')[0];
+    return { success: true, streamed: false };
+  }
+
+  if (canStreamToDisk()) {
+    try {
+      return await streamChunksToDisk(manifest, onProgress, onStatusChange);
+    } catch (error) {
+      // The user dismissing the save dialog is a cancel, not a failure.
+      if (error?.name === 'AbortError') return { success: false, cancelled: true };
+      throw error;
+    }
+  }
+
+  return combineChunksInMemory(manifest, onProgress, onStatusChange);
 }
+
+// Fetch a file as a Blob whether or not it is chunked. Used by "Download All",
+// which needs the bytes in hand to build a ZIP.
+export async function fetchFileAsBlob(fileUrl, onProgress) {
+  const manifest = parseChunkedUrl(fileUrl);
+
+  if (!manifest) {
+    const response = await fetch(fileUrl);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.blob();
+  }
+
+  if (manifest.fileSize > MAX_IN_MEMORY_COMBINE) {
+    throw new Error(`${manifest.fileName} is too large to include in a ZIP`);
+  }
+
+  const progress = createProgressReporter(manifest.fileSize, onProgress);
+  const chunks = new Array(manifest.totalChunks);
+  const queue = Array.from({ length: manifest.totalChunks }, (_, i) => i);
+
+  const worker = async () => {
+    while (queue.length > 0) {
+      const index = queue.shift();
+      const blob = await fetchChunk(manifest.chunkUrl(index), index);
+      chunks[index] = blob;
+      progress.add(blob.size);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(PARALLEL_DOWNLOADS, manifest.totalChunks) }, worker)
+  );
+
+  if (progress.total !== manifest.fileSize) {
+    throw new Error(`${manifest.fileName}: size mismatch, file may be incomplete`);
+  }
+
+  return new Blob(chunks, { type: 'application/octet-stream' });
+}
+
+const deleteOne = (filePath) =>
+  fetch(`${UPLOAD_SERVER_URL}/delete`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filePath }),
+  });
 
 export const deleteFile = async (fileUrl) => {
   if (!UPLOAD_SERVER_URL) return;
-  
+
   try {
-    // For chunked files, delete all chunks
-    if (isChunkedFile(fileUrl)) {
-      const url = new URL(fileUrl);
-      const hash = url.hash.slice(1);
-      const params = new URLSearchParams(hash);
-      const totalChunks = parseInt(params.get('chunks'));
-      const basePath = url.pathname;
-      
-      for (let i = 0; i < totalChunks; i++) {
-        await fetch(`${UPLOAD_SERVER_URL}/delete`, {
-          method: 'DELETE',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ filePath: `${basePath}.chunk${i}` }),
-        });
-      }
-    } else {
-      await fetch(`${UPLOAD_SERVER_URL}/delete`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filePath: fileUrl }),
-      });
+    const manifest = parseChunkedUrl(fileUrl);
+
+    if (!manifest) {
+      await deleteOne(fileUrl);
+      return;
     }
+
+    // Chunked file - delete every chunk. Paths are full CDN URLs, matching the
+    // format the single-file delete above has always sent.
+    const queue = Array.from({ length: manifest.totalChunks }, (_, i) => i);
+    const worker = async () => {
+      while (queue.length > 0) {
+        await deleteOne(manifest.chunkUrl(queue.shift()));
+      }
+    };
+    await Promise.all(Array.from({ length: 6 }, worker));
   } catch (error) {
     console.error('Delete error:', error);
   }

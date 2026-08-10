@@ -32,6 +32,50 @@ function formatTime(seconds) {
   return `${hours}h ${mins}m`;
 }
 
+// Download link that understands chunked files. A chunked file's stored URL
+// points at a base object that was never uploaded, so it cannot be linked to
+// directly - the chunks have to be reassembled in the browser.
+function DownloadLink({ fileUrl }) {
+  const [status, setStatus] = useState('idle');
+  const [progress, setProgress] = useState(0);
+
+  if (!db.isChunkedFile(fileUrl)) {
+    return (
+      <a href={fileUrl} target="_blank" rel="noopener noreferrer" download className="text-xs text-gray-500 hover:text-black">
+        📥 Download
+      </a>
+    );
+  }
+
+  const handleClick = async () => {
+    setStatus('downloading');
+    setProgress(0);
+    try {
+      const result = await db.downloadChunkedFile(fileUrl, (percent) => setProgress(percent));
+      if (result?.cancelled) {
+        setStatus('idle');
+        return;
+      }
+      setStatus('done');
+      setTimeout(() => setStatus('idle'), 3000);
+    } catch (error) {
+      console.error('Download failed:', error);
+      alert(`Download failed: ${error.message}`);
+      setStatus('idle');
+    }
+  };
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={status === 'downloading'}
+      className="text-xs text-gray-500 hover:text-black disabled:opacity-60"
+    >
+      {status === 'downloading' ? `📥 ${progress}%` : status === 'done' ? '✓ Downloaded' : '📥 Download'}
+    </button>
+  );
+}
+
 const StatusIcon = ({ status }) => {
   switch (status) {
     case 'uploading': return <span className="inline-block animate-spin">⏳</span>;
@@ -875,14 +919,14 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                               {t.sent ? (
                                 <div>
                                   <p className="text-sm text-gray-600 mb-2">📎 {t.file_name}</p>
-                                  <a href={t.file_url} target="_blank" rel="noopener noreferrer" download className="text-xs text-gray-500 hover:text-black">📥 Download</a>
+                                  <DownloadLink fileUrl={t.file_url} />
                                 </div>
                               ) : t.file_url ? (
                                 <div>
                                   <p className="text-sm text-gray-700 mb-2">📎 {t.file_name}</p>
                                   {t.file_url !== 'uploading' && (
                                     <div className="flex gap-3">
-                                      <a href={t.file_url} target="_blank" rel="noopener noreferrer" download className="text-xs text-gray-500 hover:text-black">📥 Download</a>
+                                      <DownloadLink fileUrl={t.file_url} />
                                       <button onClick={() => removeFile(project.id, t.id, t.file_url)} className="text-xs text-red-500 hover:text-red-700">Remove</button>
                                     </div>
                                   )}

@@ -1,106 +1,14 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Head from 'next/head';
-import { supabase } from '../../lib/supabase';
+import {
+  supabase,
+  isChunkedFile,
+  downloadChunkedFile,
+  fetchFileAsBlob,
+  triggerBlobDownload,
+} from '../../lib/supabase';
 import JSZip from 'jszip';
-
-// Check if URL is a chunked file
-function isChunkedFile(fileUrl) {
-  return fileUrl && fileUrl.includes('#chunks=');
-}
-
-// Download and combine chunks on client side
-async function downloadChunkedFile(fileUrl, onProgress) {
-  const url = new URL(fileUrl);
-  const hash = url.hash.slice(1);
-  const params = new URLSearchParams(hash);
-  
-  const totalChunks = parseInt(params.get('chunks'));
-  const fileSize = parseInt(params.get('size'));
-  const fileName = decodeURIComponent(params.get('name'));
-  const basePath = url.origin + url.pathname;
-  
-  const chunks = new Array(totalChunks);
-  let downloadedBytes = 0;
-  let lastTime = Date.now();
-  let lastBytes = 0;
-  let speedSamples = [];
-  
-  const PARALLEL_DOWNLOADS = 6;
-  const downloadQueue = Array.from({ length: totalChunks }, (_, i) => i);
-  const activeDownloads = new Set();
-  
-  await new Promise((resolve, reject) => {
-    const processQueue = async () => {
-      while (downloadQueue.length > 0 || activeDownloads.size > 0) {
-        while (downloadQueue.length > 0 && activeDownloads.size < PARALLEL_DOWNLOADS) {
-          const chunkIndex = downloadQueue.shift();
-          activeDownloads.add(chunkIndex);
-          
-          (async () => {
-            try {
-              const chunkUrl = `${basePath}.chunk${chunkIndex}`;
-              const response = await fetch(chunkUrl);
-              if (!response.ok) throw new Error(`HTTP ${response.status}`);
-              
-              const blob = await response.blob();
-              chunks[chunkIndex] = blob;
-              downloadedBytes += blob.size;
-              
-              // Update progress
-              const now = Date.now();
-              const timeDiff = (now - lastTime) / 1000;
-              if (timeDiff >= 0.2) {
-                const speed = (downloadedBytes - lastBytes) / timeDiff;
-                speedSamples.push(speed);
-                if (speedSamples.length > 10) speedSamples.shift();
-                lastBytes = downloadedBytes;
-                lastTime = now;
-              }
-              const avgSpeed = speedSamples.length > 0 
-                ? speedSamples.reduce((a, b) => a + b, 0) / speedSamples.length : 0;
-              const percent = Math.round((downloadedBytes / fileSize) * 100);
-              onProgress?.(percent, avgSpeed);
-              
-            } catch (error) {
-              // Retry once
-              try {
-                const chunkUrl = `${basePath}.chunk${chunkIndex}`;
-                const response = await fetch(chunkUrl);
-                const blob = await response.blob();
-                chunks[chunkIndex] = blob;
-                downloadedBytes += blob.size;
-              } catch (e) {
-                reject(new Error(`Failed to download chunk ${chunkIndex}`));
-                return;
-              }
-            } finally {
-              activeDownloads.delete(chunkIndex);
-            }
-          })();
-        }
-        await new Promise(r => setTimeout(r, 50));
-      }
-      resolve();
-    };
-    processQueue();
-  });
-  
-  // Combine chunks
-  const combinedBlob = new Blob(chunks, { type: 'application/octet-stream' });
-  
-  // Trigger download
-  const downloadUrl = URL.createObjectURL(combinedBlob);
-  const a = document.createElement('a');
-  a.href = downloadUrl;
-  a.download = fileName;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(downloadUrl);
-  
-  return { success: true };
-}
 
 // Download Button
 function DownloadButton({ file }) {
@@ -108,28 +16,39 @@ function DownloadButton({ file }) {
   const [progress, setProgress] = useState(0);
   const [speed, setSpeed] = useState(0);
   const [showPopup, setShowPopup] = useState(false);
-  
+  const [errorMessage, setErrorMessage] = useState(null);
+
   const isChunked = isChunkedFile(file.url);
   const isMobile = typeof window !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-  
+
   const handleClick = async () => {
     if (isChunked) {
-      // Chunked file - download and combine in browser
+      // Chunked file - reassembled in the browser (streamed to disk where
+      // supported, combined in memory otherwise).
       setStatus('downloading');
       setProgress(0);
-      
+      setErrorMessage(null);
+
       try {
-        await downloadChunkedFile(file.url, (percent, spd) => {
+        const result = await downloadChunkedFile(file.url, (percent, spd) => {
           setProgress(percent);
           setSpeed(spd);
         });
+
+        if (result?.cancelled) {
+          setStatus('idle');
+          setProgress(0);
+          return;
+        }
+
         setStatus('done');
         if (isMobile) setShowPopup(true);
         setTimeout(() => { setStatus('idle'); setProgress(0); }, 3000);
       } catch (error) {
         console.error('Download failed:', error);
+        setErrorMessage(error.message);
         setStatus('error');
-        setTimeout(() => setStatus('idle'), 3000);
+        setTimeout(() => { setStatus('idle'); setErrorMessage(null); }, 8000);
       }
     } else {
       // Regular file - direct download
@@ -186,6 +105,9 @@ function DownloadButton({ file }) {
               <span className="text-xs text-gray-500 mt-1 block">{progress}% • {formatSpeed(speed)}</span>
             </div>
           )}
+          {status === 'error' && errorMessage && (
+            <span className="text-xs text-red-600 mt-1 block">{errorMessage}</span>
+          )}
         </div>
         <span className="text-sm font-semibold whitespace-nowrap">
           {status === 'idle' && <span className="text-black">Download ↓</span>}
@@ -234,43 +156,52 @@ function ProjectCard({ project, expanded, onToggle }) {
     setDownloading(true);
     try {
       const zip = new JSZip();
-      
-      for (const task of clientTasks) {
+
+      // Flatten every deliverable into one list of {path, url} to zip.
+      const entries = clientTasks.flatMap(task => {
         const label = task.text.replace('Submit ', '').replace(' to client', '');
-        
         if (task.files && task.files.length > 0) {
-          for (const file of task.files) {
-            try {
-              const response = await fetch(file.url);
-              const blob = await response.blob();
-              zip.file(`${label}/${file.name}`, blob);
-            } catch (e) {
-              console.error('Failed to download:', file.name, e);
-            }
-          }
-        } else if (task.file_url) {
-          try {
-            const response = await fetch(task.file_url);
-            const blob = await response.blob();
-            zip.file(`${label}/${task.file_name || 'file'}`, blob);
-          } catch (e) {
-            console.error('Failed to download:', task.file_name, e);
-          }
+          return task.files.map(f => ({ path: `${label}/${f.name}`, url: f.url, name: f.name }));
+        }
+        if (task.file_url) {
+          const name = task.file_name || 'file';
+          return [{ path: `${label}/${name}`, url: task.file_url, name }];
+        }
+        return [];
+      });
+
+      // Chunked files must be reassembled first - fetching their URL directly
+      // returns a 404, which previously left them silently missing from the ZIP.
+      const failed = [];
+      for (const entry of entries) {
+        try {
+          zip.file(entry.path, await fetchFileAsBlob(entry.url));
+        } catch (e) {
+          console.error('Failed to download:', entry.name, e);
+          failed.push(entry.name);
         }
       }
-      
+
+      if (failed.length === entries.length) {
+        alert('Download failed. Please try downloading the files individually.');
+        return;
+      }
+
       const blob = await zip.generateAsync({ type: 'blob' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${project.name.replace(/[^a-zA-Z0-9]/g, '_')}.zip`;
-      a.click();
-      URL.revokeObjectURL(url);
+      triggerBlobDownload(blob, `${project.name.replace(/[^a-zA-Z0-9]/g, '_')}.zip`);
+
+      if (failed.length > 0) {
+        alert(
+          `${failed.length} file${failed.length > 1 ? 's were' : ' was'} too large to include in the ZIP ` +
+          `(${failed.join(', ')}). Please download ${failed.length > 1 ? 'them' : 'it'} individually.`
+        );
+      }
     } catch (e) {
       console.error('Download failed:', e);
       alert('Download failed. Please try again.');
+    } finally {
+      setDownloading(false);
     }
-    setDownloading(false);
   };
 
   if (totalFiles === 0) return null;
