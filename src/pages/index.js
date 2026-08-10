@@ -685,6 +685,8 @@ function EditorPortalDashboard({ editorId, editorName }) {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(null);
+  const [uploading, setUploading] = useState(null);
+  const [clientAssets, setClientAssets] = useState({});
   
   useEffect(() => {
     loadTasks();
@@ -696,6 +698,19 @@ function EditorPortalDashboard({ editorId, editorName }) {
       setLoading(true);
       const data = await db.getEditorTasks(editorId);
       setTasks(data || []);
+      
+      // Load client assets for each unique client
+      const clientIds = [...new Set((data || []).map(t => t.project?.client?.id).filter(Boolean))];
+      const assetsMap = {};
+      for (const clientId of clientIds) {
+        try {
+          const assets = await db.getAssets(clientId);
+          assetsMap[clientId] = assets || [];
+        } catch (e) {
+          assetsMap[clientId] = [];
+        }
+      }
+      setClientAssets(assetsMap);
     } catch (e) {
       console.error('Failed to load tasks:', e);
     } finally {
@@ -703,13 +718,29 @@ function EditorPortalDashboard({ editorId, editorName }) {
     }
   };
   
-  const markTaskComplete = async (taskId) => {
+  const handleUploadFinal = async (taskId, projectId, file) => {
+    setUploading(taskId);
     try {
-      await db.updateTask(taskId, { completed: true });
-      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, completed: true } : t));
+      const result = await db.uploadFile(projectId, file, () => {}, () => {});
+      await db.updateTask(taskId, { 
+        file_url: result.fileUrl,
+        file_name: file.name,
+        editor_submitted_at: new Date().toISOString(),
+        status: 'pending_review'
+      });
+      setTasks(prev => prev.map(t => t.id === taskId ? { 
+        ...t, 
+        file_url: result.fileUrl, 
+        file_name: file.name,
+        editor_submitted_at: new Date().toISOString(),
+        status: 'pending_review'
+      } : t));
+      alert('✅ File uploaded! Waiting for admin review.');
     } catch (e) {
-      console.error('Failed to mark complete:', e);
+      console.error('Upload failed:', e);
+      alert('Upload failed. Please try again.');
     }
+    setUploading(null);
   };
   
   const formatDate = (date) => {
@@ -725,12 +756,22 @@ function EditorPortalDashboard({ editorId, editorName }) {
     return diff;
   };
   
+  const getTaskType = (taskText) => {
+    // Extract type like "Listing Video", "Floor Plan", etc.
+    const match = taskText?.match(/Submit (.+?) to/i);
+    return match ? match[1] : taskText;
+  };
+  
   if (loading) {
     return <div className="h-full flex items-center justify-center bg-gray-50"><div className="animate-spin text-4xl">⏳</div></div>;
   }
   
-  const pendingTasks = tasks.filter(t => !t.completed);
+  // Group by status
+  const pendingTasks = tasks.filter(t => !t.completed && t.status !== 'pending_review' && !t.editor_submitted_at);
+  const submittedTasks = tasks.filter(t => (t.status === 'pending_review' || t.editor_submitted_at) && !t.completed);
   const completedTasks = tasks.filter(t => t.completed);
+  const rejectedTasks = tasks.filter(t => t.status === 'rejected');
+  
   const overdueTasks = pendingTasks.filter(t => getDaysUntil(t.editor_due_date) !== null && getDaysUntil(t.editor_due_date) < 0);
   const dueSoonTasks = pendingTasks.filter(t => {
     const days = getDaysUntil(t.editor_due_date);
@@ -740,138 +781,292 @@ function EditorPortalDashboard({ editorId, editorName }) {
   return (
     <div className="h-full flex flex-col bg-gray-50 overflow-auto">
       {/* Stats */}
-      <div className="px-6 py-4 grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <div className="bg-white rounded-xl p-4 border border-gray-200">
-          <p className="text-2xl font-bold text-gray-900">{pendingTasks.length}</p>
-          <p className="text-sm text-gray-500">Pending</p>
+      <div className="px-4 py-3 grid grid-cols-4 gap-3">
+        <div className="bg-white rounded-xl p-3 border border-gray-200 text-center">
+          <p className="text-xl font-bold text-gray-900">{pendingTasks.length}</p>
+          <p className="text-xs text-gray-500">To Do</p>
         </div>
-        <div className="bg-white rounded-xl p-4 border border-gray-200">
-          <p className="text-2xl font-bold text-green-600">{completedTasks.length}</p>
-          <p className="text-sm text-gray-500">Completed</p>
+        <div className="bg-yellow-50 rounded-xl p-3 border border-yellow-200 text-center">
+          <p className="text-xl font-bold text-yellow-600">{submittedTasks.length}</p>
+          <p className="text-xs text-yellow-600">Pending Review</p>
         </div>
-        <div className="bg-white rounded-xl p-4 border border-orange-200 bg-orange-50">
-          <p className="text-2xl font-bold text-orange-600">{dueSoonTasks.length}</p>
-          <p className="text-sm text-orange-600">Due Soon</p>
+        <div className="bg-red-50 rounded-xl p-3 border border-red-200 text-center">
+          <p className="text-xl font-bold text-red-600">{rejectedTasks.length}</p>
+          <p className="text-xs text-red-600">Needs Revision</p>
         </div>
-        <div className="bg-white rounded-xl p-4 border border-red-200 bg-red-50">
-          <p className="text-2xl font-bold text-red-600">{overdueTasks.length}</p>
-          <p className="text-sm text-red-600">Overdue</p>
+        <div className="bg-green-50 rounded-xl p-3 border border-green-200 text-center">
+          <p className="text-xl font-bold text-green-600">{completedTasks.length}</p>
+          <p className="text-xs text-green-600">Approved</p>
         </div>
       </div>
       
       {/* Task List */}
-      <div className="flex-1 px-6 pb-6">
-        {pendingTasks.length === 0 ? (
+      <div className="flex-1 px-4 pb-6 space-y-6">
+        
+        {/* Rejected Tasks - Show First */}
+        {rejectedTasks.length > 0 && (
+          <div>
+            <h2 className="text-sm font-semibold text-red-700 mb-2 flex items-center gap-2">
+              <span>⚠️ Needs Revision</span>
+            </h2>
+            <div className="space-y-3">
+              {rejectedTasks.map(task => (
+                <TaskCard 
+                  key={task.id} 
+                  task={task} 
+                  expanded={expanded === task.id}
+                  onToggle={() => setExpanded(expanded === task.id ? null : task.id)}
+                  onUpload={(file) => handleUploadFinal(task.id, task.project?.id, file)}
+                  uploading={uploading === task.id}
+                  clientAssets={clientAssets[task.project?.client?.id] || []}
+                  formatDate={formatDate}
+                  getDaysUntil={getDaysUntil}
+                  getTaskType={getTaskType}
+                  status="rejected"
+                />
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {/* Pending Tasks */}
+        {pendingTasks.length > 0 && (
+          <div>
+            <h2 className="text-sm font-semibold text-gray-700 mb-2">📋 To Do ({pendingTasks.length})</h2>
+            <div className="space-y-3">
+              {pendingTasks.map(task => (
+                <TaskCard 
+                  key={task.id} 
+                  task={task} 
+                  expanded={expanded === task.id}
+                  onToggle={() => setExpanded(expanded === task.id ? null : task.id)}
+                  onUpload={(file) => handleUploadFinal(task.id, task.project?.id, file)}
+                  uploading={uploading === task.id}
+                  clientAssets={clientAssets[task.project?.client?.id] || []}
+                  formatDate={formatDate}
+                  getDaysUntil={getDaysUntil}
+                  getTaskType={getTaskType}
+                  status="pending"
+                />
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {/* Submitted / Pending Review */}
+        {submittedTasks.length > 0 && (
+          <div>
+            <h2 className="text-sm font-semibold text-yellow-700 mb-2">⏳ Waiting for Review ({submittedTasks.length})</h2>
+            <div className="space-y-2">
+              {submittedTasks.map(task => (
+                <div key={task.id} className="bg-yellow-50 border border-yellow-200 rounded-xl p-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="font-medium text-gray-900">{task.project?.name}</p>
+                      <p className="text-sm text-gray-500">{getTaskType(task.text)} • {task.project?.client?.name}</p>
+                    </div>
+                    <span className="text-xs bg-yellow-200 text-yellow-800 px-2 py-1 rounded-full">Pending Review</span>
+                  </div>
+                  {task.file_name && (
+                    <p className="text-xs text-gray-500 mt-2">📎 Submitted: {task.file_name}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {/* Completed */}
+        {completedTasks.length > 0 && (
+          <div>
+            <h2 className="text-sm font-semibold text-green-700 mb-2">✅ Approved ({completedTasks.length})</h2>
+            <div className="space-y-2">
+              {completedTasks.slice(0, 5).map(task => (
+                <div key={task.id} className="bg-green-50 border border-green-200 rounded-xl p-3 opacity-70">
+                  <p className="font-medium text-gray-700">{task.project?.name}</p>
+                  <p className="text-sm text-gray-500">{getTaskType(task.text)} • {task.project?.client?.name}</p>
+                </div>
+              ))}
+              {completedTasks.length > 5 && (
+                <p className="text-sm text-gray-400 text-center">+ {completedTasks.length - 5} more</p>
+              )}
+            </div>
+          </div>
+        )}
+        
+        {/* Empty State */}
+        {pendingTasks.length === 0 && submittedTasks.length === 0 && rejectedTasks.length === 0 && (
           <div className="text-center py-16">
             <p className="text-6xl mb-4">🎉</p>
             <p className="text-xl font-medium text-gray-600">All caught up!</p>
             <p className="text-gray-400 mt-2">No pending tasks</p>
           </div>
-        ) : (
-          <div className="space-y-3">
-            {pendingTasks.map(task => {
-              const daysUntil = getDaysUntil(task.editor_due_date);
-              const isOverdue = daysUntil !== null && daysUntil < 0;
-              const isDueSoon = daysUntil !== null && daysUntil >= 0 && daysUntil <= 3;
-              const isExpanded = expanded === task.id;
-              
-              return (
-                <div key={task.id} className={`bg-white rounded-xl border-2 overflow-hidden transition-all ${isOverdue ? 'border-red-300' : isDueSoon ? 'border-orange-300' : 'border-gray-200'}`}>
-                  <div className="p-4 cursor-pointer hover:bg-gray-50 transition-colors" onClick={() => setExpanded(isExpanded ? null : task.id)}>
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium text-gray-900 truncate">{task.text}</p>
-                        <div className="flex items-center gap-3 mt-1 text-sm">
-                          <span className="text-gray-500">📁 {task.project?.name || 'Unknown Project'}</span>
-                          <span className="text-gray-400">•</span>
-                          <span className="text-gray-500">🏠 {task.project?.client?.name || 'Unknown Client'}</span>
-                        </div>
-                      </div>
-                      <div className="text-right flex-shrink-0">
-                        <p className={`font-medium ${isOverdue ? 'text-red-600' : isDueSoon ? 'text-orange-600' : 'text-gray-600'}`}>
-                          {formatDate(task.editor_due_date)}
-                        </p>
-                        <p className="text-xs mt-0.5">
-                          {isOverdue ? (
-                            <span className="text-red-500">{Math.abs(daysUntil)} day{Math.abs(daysUntil) !== 1 ? 's' : ''} overdue</span>
-                          ) : daysUntil === 0 ? (
-                            <span className="text-orange-500">Due today</span>
-                          ) : daysUntil !== null ? (
-                            <span className="text-gray-400">{daysUntil} day{daysUntil !== 1 ? 's' : ''} left</span>
-                          ) : null}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between mt-3">
-                      <span className="text-xs text-gray-400">{isExpanded ? '▲ Less' : '▼ More details'}</span>
-                      <button onClick={(e) => { e.stopPropagation(); markTaskComplete(task.id); }} className="bg-green-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors">
-                        ✓ Mark Complete
-                      </button>
-                    </div>
-                  </div>
-                  
-                  {isExpanded && (
-                    <div className="px-4 pb-4 border-t border-gray-100 bg-gray-50">
-                      <div className="pt-4 space-y-3">
-                        {task.editor_notes && (
-                          <div>
-                            <p className="text-xs font-medium text-gray-500 uppercase mb-1">Notes</p>
-                            <p className="text-sm text-gray-700 bg-white p-3 rounded-lg border">{task.editor_notes}</p>
-                          </div>
-                        )}
-                        
-                        {task.raw_files && task.raw_files.length > 0 && (
-                          <div>
-                            <p className="text-xs font-medium text-gray-500 uppercase mb-2">Raw Files</p>
-                            <div className="space-y-1">
-                              {task.raw_files.map((file, i) => (
-                                <a key={i} href={file.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm text-blue-600 hover:text-blue-800 bg-white p-2 rounded-lg border hover:bg-blue-50 transition-colors">
-                                  <span>📎</span>
-                                  <span className="truncate flex-1">{file.name}</span>
-                                  <span className="text-gray-400 text-xs">↗</span>
-                                </a>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                        
-                        <div className="grid grid-cols-2 gap-3 text-sm">
-                          <div className="bg-white p-3 rounded-lg border">
-                            <p className="text-xs text-gray-500">Project Due</p>
-                            <p className="font-medium">{formatDate(task.project?.due_date)}</p>
-                          </div>
-                          <div className="bg-white p-3 rounded-lg border">
-                            <p className="text-xs text-gray-500">Assigned</p>
-                            <p className="font-medium">{formatDate(task.assigned_at)}</p>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
         )}
-        
-        {/* Completed Tasks */}
-        {completedTasks.length > 0 && (
-          <div className="mt-8">
-            <h2 className="text-lg font-semibold text-gray-400 mb-3">✓ Completed ({completedTasks.length})</h2>
-            <div className="space-y-2">
-              {completedTasks.slice(0, 5).map(task => (
-                <div key={task.id} className="bg-white/50 rounded-lg border border-gray-200 p-3 opacity-60">
-                  <p className="text-sm text-gray-500 line-through">{task.text}</p>
-                  <p className="text-xs text-gray-400 mt-1">{task.project?.name} • {task.project?.client?.name}</p>
-                </div>
-              ))}
-              {completedTasks.length > 5 && (
-                <p className="text-sm text-gray-400 text-center py-2">+ {completedTasks.length - 5} more completed</p>
+      </div>
+    </div>
+  );
+}
+
+// Task Card Component for Editor
+function TaskCard({ task, expanded, onToggle, onUpload, uploading, clientAssets, formatDate, getDaysUntil, getTaskType, status }) {
+  const fileInputRef = React.useRef(null);
+  const daysUntil = getDaysUntil(task.editor_due_date);
+  const isOverdue = daysUntil !== null && daysUntil < 0;
+  const isDueSoon = daysUntil !== null && daysUntil >= 0 && daysUntil <= 3;
+  
+  const borderColor = status === 'rejected' ? 'border-red-400 bg-red-50' : 
+                      isOverdue ? 'border-red-300' : 
+                      isDueSoon ? 'border-orange-300' : 'border-gray-200';
+  
+  return (
+    <div className={`bg-white rounded-xl border-2 overflow-hidden ${borderColor}`}>
+      {/* Header - Always Visible */}
+      <div className="p-4 cursor-pointer hover:bg-gray-50" onClick={onToggle}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            {/* Project Name - Main Title */}
+            <h3 className="font-semibold text-lg text-gray-900">{task.project?.name || 'Unknown Project'}</h3>
+            {/* Task Type - Subtitle */}
+            <p className="text-sm text-purple-600 font-medium">{getTaskType(task.text)}</p>
+            {/* Client - Clear Banner */}
+            <div className="flex items-center gap-2 mt-2">
+              <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded-lg text-xs font-medium">
+                🏢 {task.project?.client?.name || 'Unknown Client'}
+              </span>
+              {status === 'rejected' && (
+                <span className="bg-red-100 text-red-700 px-2 py-1 rounded-lg text-xs font-medium">
+                  ⚠️ Revision Needed
+                </span>
               )}
             </div>
           </div>
-        )}
+          <div className="text-right flex-shrink-0">
+            <p className={`font-medium ${isOverdue ? 'text-red-600' : isDueSoon ? 'text-orange-600' : 'text-gray-600'}`}>
+              {formatDate(task.editor_due_date)}
+            </p>
+            <p className="text-xs mt-0.5">
+              {isOverdue ? (
+                <span className="text-red-500 font-medium">{Math.abs(daysUntil)}d overdue</span>
+              ) : daysUntil === 0 ? (
+                <span className="text-orange-500 font-medium">Due today</span>
+              ) : daysUntil !== null ? (
+                <span className="text-gray-400">{daysUntil}d left</span>
+              ) : null}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100">
+          <span className="text-xs text-gray-400">{expanded ? '▲ Hide details' : '▼ Show details & upload'}</span>
+        </div>
       </div>
+      
+      {/* Expanded Content */}
+      {expanded && (
+        <div className="px-4 pb-4 border-t border-gray-100 bg-gray-50 space-y-4">
+          
+          {/* Rejection Notes */}
+          {status === 'rejected' && task.rejection_notes && (
+            <div className="bg-red-100 border border-red-300 rounded-lg p-3 mt-3">
+              <p className="text-xs font-medium text-red-800 mb-1">📝 Revision Notes:</p>
+              <p className="text-sm text-red-700">{task.rejection_notes}</p>
+            </div>
+          )}
+          
+          {/* Editor Notes */}
+          {task.editor_notes && (
+            <div className="mt-3">
+              <p className="text-xs font-medium text-gray-500 uppercase mb-1">📝 Brief / Instructions</p>
+              <p className="text-sm text-gray-700 bg-white p-3 rounded-lg border">{task.editor_notes}</p>
+            </div>
+          )}
+          
+          {/* Raw Files - Better Download UI */}
+          {task.raw_files && task.raw_files.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-gray-500 uppercase mb-2">📥 RAW FILES TO DOWNLOAD</p>
+              <div className="space-y-2">
+                {task.raw_files.map((file, i) => (
+                  <a 
+                    key={i}
+                    href={file.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-3 p-3 bg-blue-50 border-2 border-blue-200 rounded-lg hover:bg-blue-100 hover:border-blue-400 transition-all group"
+                  >
+                    <span className="text-2xl">📁</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-blue-900 truncate">{file.name}</p>
+                      <p className="text-xs text-blue-600">Click to download</p>
+                    </div>
+                    <span className="text-blue-600 text-xl group-hover:translate-x-1 transition-transform">↓</span>
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          {/* Client Assets */}
+          {clientAssets.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-gray-500 uppercase mb-2">🎨 CLIENT BRAND ASSETS</p>
+              <div className="grid grid-cols-2 gap-2">
+                {clientAssets.map((asset, i) => (
+                  <a 
+                    key={i}
+                    href={asset.file_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2 p-2 bg-purple-50 border border-purple-200 rounded-lg hover:bg-purple-100 text-sm"
+                  >
+                    <span>{asset.type === 'image' ? '🖼️' : asset.type === 'font' ? '🔤' : asset.type === 'video' ? '🎬' : '📄'}</span>
+                    <span className="truncate flex-1 text-purple-900">{asset.name}</span>
+                    <span className="text-purple-400">↓</span>
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          {/* Upload Final File */}
+          <div className="pt-3 border-t border-gray-200">
+            <p className="text-xs font-medium text-gray-500 uppercase mb-2">📤 UPLOAD FINAL FILE</p>
+            <input 
+              type="file" 
+              ref={fileInputRef}
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files?.[0]) {
+                  onUpload(e.target.files[0]);
+                }
+              }}
+            />
+            {task.file_url ? (
+              <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                <p className="text-sm text-green-700">✅ Uploaded: {task.file_name}</p>
+                <button 
+                  onClick={() => fileInputRef.current?.click()}
+                  className="text-xs text-green-600 underline mt-1"
+                  disabled={uploading}
+                >
+                  Replace file
+                </button>
+              </div>
+            ) : (
+              <button 
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                className="w-full bg-green-600 text-white py-3 rounded-lg font-medium hover:bg-green-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {uploading ? (
+                  <>⏳ Uploading...</>
+                ) : (
+                  <>📤 Upload Completed Work</>
+                )}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1001,6 +1196,49 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     
     try {
       await db.assignTaskToEditor(taskId, data.editor_id, data.editor_due_date, data.editor_notes, data.raw_files);
+    } catch (e) {
+      console.error(e);
+      await refreshData();
+    }
+  };
+
+  // Approve editor submission
+  const handleApproveTask = async (projectId, taskId) => {
+    setProjects(prev => prev.map(p => p.id !== projectId ? p : {
+      ...p,
+      tasks: p.tasks.map(t => t.id === taskId ? { ...t, completed: true, status: 'approved', approved_at: new Date().toISOString() } : t)
+    }));
+    
+    try {
+      await db.updateTask(taskId, { completed: true, status: 'approved', approved_at: new Date().toISOString() });
+    } catch (e) {
+      console.error(e);
+      await refreshData();
+    }
+  };
+
+  // Reject editor submission
+  const handleRejectTask = async (projectId, taskId, notes) => {
+    setProjects(prev => prev.map(p => p.id !== projectId ? p : {
+      ...p,
+      tasks: p.tasks.map(t => t.id === taskId ? { 
+        ...t, 
+        status: 'rejected', 
+        rejection_notes: notes,
+        file_url: null, // Clear the file so editor can re-upload
+        file_name: null,
+        editor_submitted_at: null
+      } : t)
+    }));
+    
+    try {
+      await db.updateTask(taskId, { 
+        status: 'rejected', 
+        rejection_notes: notes,
+        file_url: null,
+        file_name: null,
+        editor_submitted_at: null
+      });
     } catch (e) {
       console.error(e);
       await refreshData();
@@ -1334,22 +1572,128 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                           </div>
                         </div>
                         <div className="p-5 sm:p-6 border-t border-gray-200 bg-gray-50">
-                          <h4 className="font-medium text-sm mb-4 text-gray-900">🎬 Editor Tasks</h4>
-                          <div className="space-y-2">{editorTasks.map(t => (
-                            <div key={t.id} className="flex items-center gap-3 p-3 bg-white rounded-xl border border-gray-200 hover:border-gray-300 transition-colors group">
-                              <input type="checkbox" checked={t.completed || t.editor_bypass} onChange={() => toggleTask(project.id, t.id, t.completed)} className="w-4 h-4 rounded" disabled={t.editor_bypass} />
-                              <span className={`flex-1 ${t.completed || t.editor_bypass ? 'line-through text-gray-400' : 'text-gray-700'}`}>{t.text}</span>
-                              <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <label className="flex items-center gap-1 text-xs text-gray-500 cursor-pointer" title="Manual bypass - mark as done without editor">
-                                  <input type="checkbox" checked={t.editor_bypass || false} onChange={(e) => handleEditorBypass(project.id, t.id, e.target.checked)} className="w-3 h-3" />
-                                  Bypass
-                                </label>
-                                <button onClick={() => setModal({ type: 'assignEditor', task: t, project, client })} className="text-xs text-blue-500 hover:text-blue-700 px-2">Assign</button>
-                                <button onClick={() => handleDeleteTask(project.id, t)} className="text-xs text-red-400 hover:text-red-600">🗑️</button>
-                              </div>
-                              {t.editor_id && <span className="text-xs text-purple-600 bg-purple-50 px-2 py-0.5 rounded">{editors.find(e => e.id === t.editor_id)?.name || 'Assigned'}</span>}
-                            </div>
-                          ))}</div>
+                          {/* Group editor tasks by status */}
+                          {(() => {
+                            const pendingReview = editorTasks.filter(t => (t.status === 'pending_review' || t.editor_submitted_at) && !t.completed && t.status !== 'rejected');
+                            const rejected = editorTasks.filter(t => t.status === 'rejected');
+                            const inProgress = editorTasks.filter(t => !t.completed && !t.editor_submitted_at && t.status !== 'pending_review' && t.status !== 'rejected');
+                            const completed = editorTasks.filter(t => t.completed);
+                            
+                            return (
+                              <>
+                                {/* Pending Review - Needs Action */}
+                                {pendingReview.length > 0 && (
+                                  <div className="mb-6">
+                                    <h4 className="font-medium text-sm mb-3 text-yellow-700 flex items-center gap-2">
+                                      ⏳ Pending Your Review ({pendingReview.length})
+                                    </h4>
+                                    <div className="space-y-3">
+                                      {pendingReview.map(t => (
+                                        <div key={t.id} className="p-4 bg-yellow-50 border-2 border-yellow-300 rounded-xl">
+                                          <div className="flex items-start justify-between gap-3 mb-3">
+                                            <div>
+                                              <span className="font-medium text-gray-900">{t.text.replace('Submit ', '').replace(' to editor', '')}</span>
+                                              <p className="text-xs text-gray-500 mt-1">Submitted by: {editors.find(e => e.id === t.editor_id)?.name || 'Editor'}</p>
+                                            </div>
+                                            <span className="text-xs bg-yellow-200 text-yellow-800 px-2 py-1 rounded-full">Needs Review</span>
+                                          </div>
+                                          {t.file_url && (
+                                            <div className="bg-white rounded-lg p-3 mb-3 border border-yellow-200">
+                                              <p className="text-sm font-medium mb-2">📎 {t.file_name}</p>
+                                              <a href={t.file_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700">
+                                                👁️ Preview / Download
+                                              </a>
+                                            </div>
+                                          )}
+                                          <div className="flex gap-2">
+                                            <button 
+                                              onClick={() => handleApproveTask(project.id, t.id)}
+                                              className="flex-1 bg-green-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-green-700"
+                                            >
+                                              ✓ Approve
+                                            </button>
+                                            <button 
+                                              onClick={() => {
+                                                const notes = prompt('Reason for rejection (will be shown to editor):');
+                                                if (notes !== null) handleRejectTask(project.id, t.id, notes);
+                                              }}
+                                              className="flex-1 bg-red-100 text-red-700 py-2 rounded-lg text-sm font-medium hover:bg-red-200"
+                                            >
+                                              ✗ Request Revision
+                                            </button>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                
+                                {/* Rejected - Sent back to editor */}
+                                {rejected.length > 0 && (
+                                  <div className="mb-6">
+                                    <h4 className="font-medium text-sm mb-3 text-red-700 flex items-center gap-2">
+                                      ⚠️ Revision Requested ({rejected.length})
+                                    </h4>
+                                    <div className="space-y-2">
+                                      {rejected.map(t => (
+                                        <div key={t.id} className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-center justify-between">
+                                          <div>
+                                            <span className="text-gray-700">{t.text.replace('Submit ', '').replace(' to editor', '')}</span>
+                                            <p className="text-xs text-red-600 mt-1">Sent back: {t.rejection_notes || 'Revision needed'}</p>
+                                          </div>
+                                          <span className="text-xs text-red-600">Waiting for editor</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                
+                                {/* In Progress */}
+                                {inProgress.length > 0 && (
+                                  <div className="mb-6">
+                                    <h4 className="font-medium text-sm mb-3 text-gray-700">🎬 In Progress ({inProgress.length})</h4>
+                                    <div className="space-y-2">
+                                      {inProgress.map(t => (
+                                        <div key={t.id} className="flex items-center gap-3 p-3 bg-white rounded-xl border border-gray-200 group">
+                                          <input type="checkbox" checked={t.completed || t.editor_bypass} onChange={() => toggleTask(project.id, t.id, t.completed)} className="w-4 h-4 rounded" disabled={t.editor_bypass} />
+                                          <span className={`flex-1 ${t.editor_bypass ? 'line-through text-gray-400' : 'text-gray-700'}`}>{t.text.replace('Submit ', '').replace(' to editor', '')}</span>
+                                          <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                            <label className="flex items-center gap-1 text-xs text-gray-500 cursor-pointer" title="Manual bypass">
+                                              <input type="checkbox" checked={t.editor_bypass || false} onChange={(e) => handleEditorBypass(project.id, t.id, e.target.checked)} className="w-3 h-3" />
+                                              Bypass
+                                            </label>
+                                            <button onClick={() => setModal({ type: 'assignEditor', task: t, project, client })} className="text-xs text-blue-500 hover:text-blue-700 px-2">Assign</button>
+                                          </div>
+                                          {t.editor_id && <span className="text-xs text-purple-600 bg-purple-50 px-2 py-0.5 rounded">{editors.find(e => e.id === t.editor_id)?.name}</span>}
+                                          {!t.editor_id && <span className="text-xs text-gray-400">Unassigned</span>}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                
+                                {/* Completed */}
+                                {completed.length > 0 && (
+                                  <div>
+                                    <h4 className="font-medium text-sm mb-3 text-green-700">✓ Approved ({completed.length})</h4>
+                                    <div className="space-y-2">
+                                      {completed.map(t => (
+                                        <div key={t.id} className="flex items-center gap-3 p-3 bg-green-50 rounded-xl border border-green-200">
+                                          <span className="text-green-500">✓</span>
+                                          <span className="text-gray-500 line-through flex-1">{t.text.replace('Submit ', '').replace(' to editor', '')}</span>
+                                          {t.file_url && <a href={t.file_url} target="_blank" rel="noopener noreferrer" className="text-xs text-gray-500 hover:text-black">📥 Download</a>}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                
+                                {editorTasks.length === 0 && (
+                                  <p className="text-gray-400 text-sm italic">No editor tasks for this project</p>
+                                )}
+                              </>
+                            );
+                          })()}
                         </div>
                         <div className="p-5 sm:p-6 border-t border-gray-200">
                           <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 mb-4">
@@ -1455,6 +1799,7 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
 function Database({ clients, setClients, services, setServices, editors, setEditors, setSidebarOpen, refreshData }) {
   const [tab, setTab] = useState('clients');
   const [modal, setModal] = useState(null);
+  const [assetModal, setAssetModal] = useState(null);
   
   const handleSave = async (type, item, isEdit) => {
     const tempId = 'temp-' + Date.now();
@@ -1521,9 +1866,217 @@ function Database({ clients, setClients, services, setServices, editors, setEdit
   const data = tab === 'clients' ? clients : tab === 'services' ? services : editors;
   return (
     <div className="flex-1 overflow-auto">
-      <div className="bg-white border-b p-3 sm:p-4"><div className="flex items-center gap-2 mb-4"><button onClick={() => setSidebarOpen(true)} className="lg:hidden text-xl">☰</button><h1 className="text-lg font-bold">Database</h1></div><div className="flex gap-2">{['clients', 'services', 'editors'].map(t => <button key={t} onClick={() => setTab(t)} className={`px-3 py-2 rounded-lg text-sm capitalize ${tab === t ? 'bg-purple-600 text-white' : 'bg-gray-100'}`}>{t}</button>)}</div></div>
-      <div className="p-3 sm:p-4"><div className="flex justify-end mb-4"><button onClick={() => setModal({ item: null })} className="bg-purple-600 text-white px-3 py-2 rounded-lg text-sm">+ Add</button></div><div className="space-y-2">{data.map(item => <div key={item.id} className="bg-white rounded-lg border p-3 flex justify-between items-start"><div className="flex-1 min-w-0"><p className="font-medium">{item.avatar || ''} {item.name}</p><p className="text-xs text-gray-500 truncate">{tab === 'editors' ? `@${item.username}` : (item.email || item.tasks?.join(', '))}</p>{item.email && tab === 'editors' && <p className="text-xs text-gray-400">{item.email}</p>}{item.notes && <p className="text-xs text-gray-400 mt-1">{item.notes}</p>}</div><div className="flex gap-2 flex-shrink-0"><button onClick={() => setModal({ item })} className="text-purple-600 text-sm">Edit</button><button onClick={() => handleDelete(tab, item.id)} className="text-red-600 text-sm">Delete</button></div></div>)}</div></div>
+      <div className="bg-white border-b p-3 sm:p-4">
+        <div className="flex items-center gap-2 mb-4">
+          <button onClick={() => setSidebarOpen(true)} className="lg:hidden text-xl">☰</button>
+          <h1 className="text-lg font-bold">Database</h1>
+        </div>
+        <div className="flex gap-2">
+          {['clients', 'services', 'editors'].map(t => (
+            <button key={t} onClick={() => setTab(t)} className={`px-3 py-2 rounded-lg text-sm capitalize ${tab === t ? 'bg-purple-600 text-white' : 'bg-gray-100'}`}>
+              {t}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="p-3 sm:p-4">
+        <div className="flex justify-end mb-4">
+          <button onClick={() => setModal({ item: null })} className="bg-purple-600 text-white px-3 py-2 rounded-lg text-sm">+ Add</button>
+        </div>
+        <div className="space-y-2">
+          {data.map(item => (
+            <div key={item.id} className="bg-white rounded-lg border p-3">
+              <div className="flex justify-between items-start">
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium">{item.avatar || ''} {item.name}</p>
+                  <p className="text-xs text-gray-500 truncate">
+                    {tab === 'editors' ? `@${item.username || item.name}` : (item.email || item.tasks?.join(', '))}
+                  </p>
+                  {item.email && tab === 'editors' && <p className="text-xs text-gray-400">{item.email}</p>}
+                  {item.notes && <p className="text-xs text-gray-400 mt-1">{item.notes}</p>}
+                </div>
+                <div className="flex gap-2 flex-shrink-0">
+                  {tab === 'clients' && (
+                    <button 
+                      onClick={() => setAssetModal({ client: item })} 
+                      className="text-blue-600 text-sm bg-blue-50 px-2 py-1 rounded"
+                    >
+                      🎨 Assets
+                    </button>
+                  )}
+                  <button onClick={() => setModal({ item })} className="text-purple-600 text-sm">Edit</button>
+                  <button onClick={() => handleDelete(tab, item.id)} className="text-red-600 text-sm">Delete</button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
       {modal && <DatabaseModal tab={tab} item={modal.item} onClose={() => setModal(null)} onSave={(i) => handleSave(tab, modal.item ? { ...i, id: modal.item.id } : i, !!modal.item)} />}
+      {assetModal && <ClientAssetsModal client={assetModal.client} onClose={() => setAssetModal(null)} />}
+    </div>
+  );
+}
+
+// Client Assets Modal
+function ClientAssetsModal({ client, onClose }) {
+  const [assets, setAssets] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = React.useRef(null);
+  
+  useEffect(() => {
+    loadAssets();
+  }, [client.id]);
+  
+  const loadAssets = async () => {
+    try {
+      const data = await db.getAssets(client.id);
+      setAssets(data || []);
+    } catch (e) {
+      console.error('Failed to load assets:', e);
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  const handleUpload = async (files) => {
+    setUploading(true);
+    for (const file of Array.from(files)) {
+      try {
+        // Determine asset type
+        const ext = file.name.split('.').pop().toLowerCase();
+        let assetType = 'other';
+        if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp'].includes(ext)) assetType = 'image';
+        else if (['ttf', 'otf', 'woff', 'woff2'].includes(ext)) assetType = 'font';
+        else if (['mp4', 'mov', 'avi', 'webm'].includes(ext)) assetType = 'video';
+        else if (['pdf'].includes(ext)) assetType = 'pdf';
+        
+        // Upload to Bunny
+        const result = await db.uploadFile(client.id, file, () => {}, () => {});
+        
+        // Create asset record
+        await db.createAsset({
+          client_id: client.id,
+          name: file.name,
+          file_url: result.fileUrl,
+          type: assetType,
+          size: file.size
+        });
+      } catch (e) {
+        console.error('Failed to upload asset:', e);
+        alert(`Failed to upload ${file.name}`);
+      }
+    }
+    setUploading(false);
+    loadAssets();
+  };
+  
+  const handleDelete = async (asset) => {
+    if (!confirm(`Delete "${asset.name}"?`)) return;
+    try {
+      await db.deleteAsset(asset.id, asset.file_url);
+      setAssets(prev => prev.filter(a => a.id !== asset.id));
+    } catch (e) {
+      console.error('Failed to delete asset:', e);
+      alert('Failed to delete');
+    }
+  };
+  
+  const getAssetIcon = (type) => {
+    switch (type) {
+      case 'image': return '🖼️';
+      case 'font': return '🔤';
+      case 'video': return '🎬';
+      case 'pdf': return '📄';
+      default: return '📁';
+    }
+  };
+  
+  const formatSize = (bytes) => {
+    if (!bytes) return '';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  };
+  
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] overflow-auto">
+        <div className="p-4 border-b flex justify-between items-start">
+          <div>
+            <h2 className="text-lg font-bold">🎨 Client Assets</h2>
+            <p className="text-sm text-gray-500">{client.name}</p>
+          </div>
+          <button onClick={onClose} className="text-2xl text-gray-400">&times;</button>
+        </div>
+        
+        <div className="p-4 space-y-4">
+          {/* Upload Section */}
+          <div className="border-2 border-dashed border-gray-300 rounded-xl p-6 text-center bg-gray-50">
+            <input 
+              type="file" 
+              ref={fileInputRef}
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files?.length) {
+                  handleUpload(e.target.files);
+                }
+              }}
+            />
+            <p className="text-3xl mb-2">📤</p>
+            <p className="text-sm text-gray-600 mb-3">Upload logos, fonts, brand guidelines, intros/outros</p>
+            <button 
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+            >
+              {uploading ? '⏳ Uploading...' : '+ Upload Assets'}
+            </button>
+          </div>
+          
+          {/* Assets List */}
+          <div>
+            <h3 className="text-sm font-medium text-gray-700 mb-2">Uploaded Assets ({assets.length})</h3>
+            {loading ? (
+              <p className="text-gray-400 text-center py-4">Loading...</p>
+            ) : assets.length === 0 ? (
+              <p className="text-gray-400 text-center py-4 text-sm">No assets uploaded yet</p>
+            ) : (
+              <div className="space-y-2">
+                {assets.map(asset => (
+                  <div key={asset.id} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg border">
+                    <span className="text-2xl">{getAssetIcon(asset.type)}</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-sm truncate">{asset.name}</p>
+                      <p className="text-xs text-gray-500">{asset.type} • {formatSize(asset.size)}</p>
+                    </div>
+                    <a 
+                      href={asset.file_url} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="text-blue-600 hover:text-blue-800 text-sm"
+                    >
+                      ↓
+                    </a>
+                    <button 
+                      onClick={() => handleDelete(asset)}
+                      className="text-red-500 hover:text-red-700 text-sm"
+                    >
+                      🗑️
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          
+          <p className="text-xs text-gray-400 text-center">
+            These assets will be available to editors working on projects for this client
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
