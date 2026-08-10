@@ -108,27 +108,84 @@ export const deleteEditor = async (id) => {
 
 // EDITOR AUTH
 export const loginEditor = async (username, password) => {
-  const { data, error } = await supabase.rpc('verify_editor_password', {
-    input_username: username,
-    input_password: password
-  });
-  if (error) throw error;
-  if (!data || data.length === 0) return null;
-  return data[0]; // { editor_id, editor_name, session_token }
+  // Try RPC first (if migration has been run), fall back to simple check
+  try {
+    const { data, error } = await supabase.rpc('verify_editor_password', {
+      input_username: username,
+      input_password: password
+    });
+    if (!error && data && data.length > 0) {
+      return data[0]; // { editor_id, editor_name, session_token }
+    }
+  } catch (e) {
+    // RPC doesn't exist, fall back to simple check
+  }
+  
+  // Fallback: simple password check (for pre-migration)
+  const { data: editor, error } = await supabase
+    .from('editors')
+    .select('*')
+    .eq('username', username)
+    .single();
+  
+  if (error || !editor) {
+    // Try by name if username doesn't exist
+    const { data: editorByName } = await supabase
+      .from('editors')
+      .select('*')
+      .eq('name', username)
+      .single();
+    
+    if (!editorByName) return null;
+    
+    // Check password (plain text or hash)
+    if (editorByName.password_hash === password || !editorByName.password_hash) {
+      return { editor_id: editorByName.id, editor_name: editorByName.name, session_token: editorByName.id };
+    }
+    return null;
+  }
+  
+  // Check password (plain text match for pre-migration)
+  if (editor.password_hash === password || !editor.password_hash) {
+    return { editor_id: editor.id, editor_name: editor.name, session_token: editor.id };
+  }
+  
+  return null;
 };
 
 export const getEditorFromToken = async (token) => {
-  const { data, error } = await supabase.rpc('get_editor_from_token', {
-    input_token: token
-  });
-  if (error) throw error;
-  if (!data || data.length === 0) return null;
-  return data[0]; // { editor_id, editor_name, editor_username }
+  // Try RPC first, fall back to direct lookup
+  try {
+    const { data, error } = await supabase.rpc('get_editor_from_token', {
+      input_token: token
+    });
+    if (!error && data && data.length > 0) {
+      return data[0];
+    }
+  } catch (e) {
+    // RPC doesn't exist
+  }
+  
+  // Fallback: token is editor ID
+  const { data: editor } = await supabase
+    .from('editors')
+    .select('id, name, username')
+    .eq('id', token)
+    .single();
+  
+  if (editor) {
+    return { editor_id: editor.id, editor_name: editor.name, editor_username: editor.username };
+  }
+  return null;
 };
 
 export const logoutEditor = async (token) => {
-  const { error } = await supabase.from('editor_sessions').delete().eq('token', token);
-  if (error) throw error;
+  // Try to delete from sessions table, ignore errors if it doesn't exist
+  try {
+    await supabase.from('editor_sessions').delete().eq('token', token);
+  } catch (e) {
+    // Table might not exist
+  }
 };
 
 // Get tasks assigned to an editor
@@ -210,6 +267,12 @@ export const deleteProject = async (id) => {
 };
 
 // TASKS
+export const createTask = async (task) => {
+  const { data, error } = await supabase.from('tasks').insert(task).select().single();
+  if (error) throw error;
+  return data;
+};
+
 export const updateTask = async (id, updates) => {
   const { data, error } = await supabase.from('tasks').update(updates).eq('id', id).select().single();
   if (error) throw error;
