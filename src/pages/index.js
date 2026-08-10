@@ -32,50 +32,6 @@ function formatTime(seconds) {
   return `${hours}h ${mins}m`;
 }
 
-// Download link that understands chunked files. A chunked file's stored URL
-// points at a base object that was never uploaded, so it cannot be linked to
-// directly - the chunks have to be reassembled in the browser.
-function DownloadLink({ fileUrl }) {
-  const [status, setStatus] = useState('idle');
-  const [progress, setProgress] = useState(0);
-
-  if (!db.isChunkedFile(fileUrl)) {
-    return (
-      <a href={fileUrl} target="_blank" rel="noopener noreferrer" download className="text-xs text-gray-500 hover:text-black">
-        📥 Download
-      </a>
-    );
-  }
-
-  const handleClick = async () => {
-    setStatus('downloading');
-    setProgress(0);
-    try {
-      const result = await db.downloadChunkedFile(fileUrl, (percent) => setProgress(percent));
-      if (result?.cancelled) {
-        setStatus('idle');
-        return;
-      }
-      setStatus('done');
-      setTimeout(() => setStatus('idle'), 3000);
-    } catch (error) {
-      console.error('Download failed:', error);
-      alert(`Download failed: ${error.message}`);
-      setStatus('idle');
-    }
-  };
-
-  return (
-    <button
-      onClick={handleClick}
-      disabled={status === 'downloading'}
-      className="text-xs text-gray-500 hover:text-black disabled:opacity-60"
-    >
-      {status === 'downloading' ? `📥 ${progress}%` : status === 'done' ? '✓ Downloaded' : '📥 Download'}
-    </button>
-  );
-}
-
 const StatusIcon = ({ status }) => {
   switch (status) {
     case 'uploading': return <span className="inline-block animate-spin">⏳</span>;
@@ -463,6 +419,36 @@ export default function App() {
     finally { setLoading(false); }
   };
 
+  // Real-time subscription - auto-refresh when data changes
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    
+    const unsubscribe = db.subscribeToAll(
+      // Project changes
+      (payload) => {
+        console.log('Project change:', payload.eventType);
+        loadAllData();
+      },
+      // Task changes
+      (payload) => {
+        console.log('Task change:', payload.eventType);
+        loadAllData();
+      },
+      // Client changes
+      (payload) => {
+        console.log('Client change:', payload.eventType);
+        loadAllData();
+      },
+      // Editor changes
+      (payload) => {
+        console.log('Editor change:', payload.eventType);
+        loadAllData();
+      }
+    );
+    
+    return () => unsubscribe();
+  }, [isAuthenticated]);
+
   const handleLogout = () => { localStorage.removeItem('pm_authenticated'); setIsAuthenticated(false); };
 
   if (!authChecked) return <div className="h-screen flex items-center justify-center bg-gray-50"><div className="animate-spin text-4xl">⏳</div></div>;
@@ -497,6 +483,8 @@ export default function App() {
             uploads={uploads}
             addToQueue={addToQueue}
           />
+        ) : portal === 'editor' ? (
+          <EditorPortal />
         ) : (
           <Placeholder type={portal} />
         )}
@@ -514,8 +502,349 @@ export default function App() {
 }
 
 function Placeholder({ type }) {
-  const cfg = { editor: { icon: '🎬' }, client: { icon: '🏠' } }[type];
-  return <div className="h-full flex items-center justify-center bg-gray-50"><div className="text-center text-gray-400"><p className="text-6xl mb-4">{cfg.icon}</p><p className="text-xl font-medium capitalize">{type} Portal</p><p className="text-sm mt-2">Coming soon</p></div></div>;
+  const cfg = { client: { icon: '🏠' } }[type];
+  return <div className="h-full flex items-center justify-center bg-gray-50"><div className="text-center text-gray-400"><p className="text-6xl mb-4">{cfg?.icon || '📋'}</p><p className="text-xl font-medium capitalize">{type} Portal</p><p className="text-sm mt-2">Coming soon</p></div></div>;
+}
+
+function EditorPortal() {
+  const [editorSession, setEditorSession] = useState(null);
+  const [tasks, setTasks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+  const [loginError, setLoginError] = useState('');
+  const [loggingIn, setLoggingIn] = useState(false);
+  const [expanded, setExpanded] = useState(null);
+  
+  // Check for existing session on mount
+  useEffect(() => {
+    const checkSession = async () => {
+      const token = localStorage.getItem('editor_token');
+      if (token) {
+        try {
+          const editor = await db.getEditorFromToken(token);
+          if (editor) {
+            setEditorSession({ ...editor, token });
+            await loadTasks(editor.editor_id);
+          } else {
+            localStorage.removeItem('editor_token');
+          }
+        } catch (e) {
+          console.error('Session check failed:', e);
+          localStorage.removeItem('editor_token');
+        }
+      }
+      setLoading(false);
+    };
+    checkSession();
+  }, []);
+  
+  const loadTasks = async (editorId) => {
+    try {
+      const data = await db.getEditorTasks(editorId);
+      setTasks(data || []);
+    } catch (e) {
+      console.error('Failed to load tasks:', e);
+    }
+  };
+  
+  const handleLogin = async () => {
+    if (!loginForm.username || !loginForm.password) {
+      setLoginError('Please enter username and password');
+      return;
+    }
+    
+    setLoggingIn(true);
+    setLoginError('');
+    
+    try {
+      const result = await db.loginEditor(loginForm.username, loginForm.password);
+      if (result) {
+        localStorage.setItem('editor_token', result.session_token);
+        setEditorSession({ editor_id: result.editor_id, editor_name: result.editor_name, token: result.session_token });
+        await loadTasks(result.editor_id);
+      } else {
+        setLoginError('Invalid username or password');
+      }
+    } catch (e) {
+      console.error('Login failed:', e);
+      setLoginError('Login failed. Please try again.');
+    }
+    setLoggingIn(false);
+  };
+  
+  const handleLogout = async () => {
+    try {
+      if (editorSession?.token) {
+        await db.logoutEditor(editorSession.token);
+      }
+    } catch (e) {
+      console.error('Logout error:', e);
+    }
+    localStorage.removeItem('editor_token');
+    setEditorSession(null);
+    setTasks([]);
+    setLoginForm({ username: '', password: '' });
+  };
+  
+  const markTaskComplete = async (taskId) => {
+    try {
+      await db.updateTask(taskId, { completed: true });
+      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, completed: true } : t));
+    } catch (e) {
+      console.error('Failed to mark complete:', e);
+    }
+  };
+  
+  const formatDate = (date) => {
+    if (!date) return 'No date';
+    return new Date(date).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+  };
+  
+  const getDaysUntil = (date) => {
+    if (!date) return null;
+    const now = new Date();
+    const due = new Date(date);
+    const diff = Math.ceil((due - now) / (1000 * 60 * 60 * 24));
+    return diff;
+  };
+  
+  if (loading) {
+    return <div className="h-full flex items-center justify-center bg-gray-50"><div className="animate-spin text-4xl">⏳</div></div>;
+  }
+  
+  // Login screen
+  if (!editorSession) {
+    return (
+      <div className="h-full flex items-center justify-center bg-gradient-to-br from-blue-50 to-purple-50">
+        <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
+          <div className="text-center mb-8">
+            <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+              <span className="text-3xl">🎬</span>
+            </div>
+            <h1 className="text-2xl font-bold text-gray-900">Editor Portal</h1>
+            <p className="text-gray-500 mt-1">Sign in to view your tasks</p>
+          </div>
+          
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+              <input 
+                type="text"
+                value={loginForm.username}
+                onChange={e => setLoginForm({ ...loginForm, username: e.target.value })}
+                onKeyDown={e => e.key === 'Enter' && handleLogin()}
+                className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Your username"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+              <input 
+                type="password"
+                value={loginForm.password}
+                onChange={e => setLoginForm({ ...loginForm, password: e.target.value })}
+                onKeyDown={e => e.key === 'Enter' && handleLogin()}
+                className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Your password"
+              />
+            </div>
+            
+            {loginError && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
+                {loginError}
+              </div>
+            )}
+            
+            <button 
+              onClick={handleLogin}
+              disabled={loggingIn}
+              className="w-full bg-blue-600 text-white py-3 rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
+            >
+              {loggingIn ? '⏳ Signing in...' : 'Sign In'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  
+  // Dashboard
+  const pendingTasks = tasks.filter(t => !t.completed);
+  const completedTasks = tasks.filter(t => t.completed);
+  const overdueTasks = pendingTasks.filter(t => getDaysUntil(t.editor_due_date) !== null && getDaysUntil(t.editor_due_date) < 0);
+  const dueSoonTasks = pendingTasks.filter(t => {
+    const days = getDaysUntil(t.editor_due_date);
+    return days !== null && days >= 0 && days <= 3;
+  });
+  
+  return (
+    <div className="h-full flex flex-col bg-gray-50">
+      {/* Header */}
+      <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center">
+            <span className="text-xl">🎬</span>
+          </div>
+          <div>
+            <h1 className="font-semibold text-gray-900">Welcome, {editorSession.editor_name}</h1>
+            <p className="text-sm text-gray-500">{pendingTasks.length} pending task{pendingTasks.length !== 1 ? 's' : ''}</p>
+          </div>
+        </div>
+        <button onClick={handleLogout} className="text-gray-500 hover:text-gray-700 text-sm">
+          Logout
+        </button>
+      </header>
+      
+      {/* Stats */}
+      <div className="px-6 py-4 grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div className="bg-white rounded-xl p-4 border border-gray-200">
+          <p className="text-2xl font-bold text-gray-900">{pendingTasks.length}</p>
+          <p className="text-sm text-gray-500">Pending</p>
+        </div>
+        <div className="bg-white rounded-xl p-4 border border-gray-200">
+          <p className="text-2xl font-bold text-green-600">{completedTasks.length}</p>
+          <p className="text-sm text-gray-500">Completed</p>
+        </div>
+        <div className="bg-white rounded-xl p-4 border border-orange-200 bg-orange-50">
+          <p className="text-2xl font-bold text-orange-600">{dueSoonTasks.length}</p>
+          <p className="text-sm text-orange-600">Due Soon</p>
+        </div>
+        <div className="bg-white rounded-xl p-4 border border-red-200 bg-red-50">
+          <p className="text-2xl font-bold text-red-600">{overdueTasks.length}</p>
+          <p className="text-sm text-red-600">Overdue</p>
+        </div>
+      </div>
+      
+      {/* Task List */}
+      <div className="flex-1 overflow-auto px-6 pb-6">
+        {pendingTasks.length === 0 ? (
+          <div className="text-center py-16">
+            <p className="text-6xl mb-4">🎉</p>
+            <p className="text-xl font-medium text-gray-600">All caught up!</p>
+            <p className="text-gray-400 mt-2">No pending tasks</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {pendingTasks.map(task => {
+              const daysUntil = getDaysUntil(task.editor_due_date);
+              const isOverdue = daysUntil !== null && daysUntil < 0;
+              const isDueSoon = daysUntil !== null && daysUntil >= 0 && daysUntil <= 3;
+              const isExpanded = expanded === task.id;
+              
+              return (
+                <div key={task.id} className={`bg-white rounded-xl border-2 overflow-hidden transition-all ${isOverdue ? 'border-red-300' : isDueSoon ? 'border-orange-300' : 'border-gray-200'}`}>
+                  <div 
+                    className="p-4 cursor-pointer hover:bg-gray-50 transition-colors"
+                    onClick={() => setExpanded(isExpanded ? null : task.id)}
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-gray-900 truncate">{task.text}</p>
+                        <div className="flex items-center gap-3 mt-1 text-sm">
+                          <span className="text-gray-500">📁 {task.project?.name || 'Unknown Project'}</span>
+                          <span className="text-gray-400">•</span>
+                          <span className="text-gray-500">🏠 {task.project?.client?.name || 'Unknown Client'}</span>
+                        </div>
+                      </div>
+                      <div className="text-right flex-shrink-0">
+                        <p className={`font-medium ${isOverdue ? 'text-red-600' : isDueSoon ? 'text-orange-600' : 'text-gray-600'}`}>
+                          {formatDate(task.editor_due_date)}
+                        </p>
+                        <p className="text-xs mt-0.5">
+                          {isOverdue ? (
+                            <span className="text-red-500">{Math.abs(daysUntil)} day{Math.abs(daysUntil) !== 1 ? 's' : ''} overdue</span>
+                          ) : daysUntil === 0 ? (
+                            <span className="text-orange-500">Due today</span>
+                          ) : daysUntil !== null ? (
+                            <span className="text-gray-400">{daysUntil} day{daysUntil !== 1 ? 's' : ''} left</span>
+                          ) : null}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between mt-3">
+                      <span className="text-xs text-gray-400">{isExpanded ? '▲ Less' : '▼ More details'}</span>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); markTaskComplete(task.id); }}
+                        className="bg-green-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors"
+                      >
+                        ✓ Mark Complete
+                      </button>
+                    </div>
+                  </div>
+                  
+                  {isExpanded && (
+                    <div className="px-4 pb-4 border-t border-gray-100 bg-gray-50">
+                      <div className="pt-4 space-y-3">
+                        {/* Notes */}
+                        {task.editor_notes && (
+                          <div>
+                            <p className="text-xs font-medium text-gray-500 uppercase mb-1">Notes</p>
+                            <p className="text-sm text-gray-700 bg-white p-3 rounded-lg border">{task.editor_notes}</p>
+                          </div>
+                        )}
+                        
+                        {/* Raw Files */}
+                        {task.raw_files && task.raw_files.length > 0 && (
+                          <div>
+                            <p className="text-xs font-medium text-gray-500 uppercase mb-2">Raw Files</p>
+                            <div className="space-y-1">
+                              {task.raw_files.map((file, i) => (
+                                <a 
+                                  key={i}
+                                  href={file.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex items-center gap-2 text-sm text-blue-600 hover:text-blue-800 bg-white p-2 rounded-lg border hover:bg-blue-50 transition-colors"
+                                >
+                                  <span>📎</span>
+                                  <span className="truncate flex-1">{file.name}</span>
+                                  <span className="text-gray-400 text-xs">↗</span>
+                                </a>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* Project Details */}
+                        <div className="grid grid-cols-2 gap-3 text-sm">
+                          <div className="bg-white p-3 rounded-lg border">
+                            <p className="text-xs text-gray-500">Project Due</p>
+                            <p className="font-medium">{formatDate(task.project?.due_date)}</p>
+                          </div>
+                          <div className="bg-white p-3 rounded-lg border">
+                            <p className="text-xs text-gray-500">Assigned</p>
+                            <p className="font-medium">{formatDate(task.assigned_at)}</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        
+        {/* Completed Tasks */}
+        {completedTasks.length > 0 && (
+          <div className="mt-8">
+            <h2 className="text-lg font-semibold text-gray-400 mb-3">✓ Completed ({completedTasks.length})</h2>
+            <div className="space-y-2">
+              {completedTasks.slice(0, 5).map(task => (
+                <div key={task.id} className="bg-white/50 rounded-lg border border-gray-200 p-3 opacity-60">
+                  <p className="text-sm text-gray-500 line-through">{task.text}</p>
+                  <p className="text-xs text-gray-400 mt-1">{task.project?.name} • {task.project?.client?.name}</p>
+                </div>
+              ))}
+              {completedTasks.length > 5 && (
+                <p className="text-sm text-gray-400 text-center py-2">+ {completedTasks.length - 5} more completed</p>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function AdminPortal({ clients, setClients, services, setServices, editors, setEditors, projects, setProjects, sidebarOpen, setSidebarOpen, refreshData, uploads, addToQueue }) {
@@ -525,6 +854,20 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
   const [modal, setModal] = useState(null);
   const [saving, setSaving] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
+  const [assets, setAssets] = useState([]);
+  
+  // Load assets on mount
+  useEffect(() => {
+    const loadAssets = async () => {
+      try {
+        const data = await db.getAssets();
+        setAssets(data || []);
+      } catch (e) {
+        console.error('Failed to load assets:', e);
+      }
+    };
+    loadAssets();
+  }, []);
 
   const getClient = id => clients.find(c => c.id === id);
   const filtered = projects.filter(p => {
@@ -571,6 +914,68 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
         }
       }
     } catch (e) { console.error(e); await refreshData(); }
+  };
+
+  // Delete individual task
+  const handleDeleteTask = async (projectId, task) => {
+    if (!confirm(`Delete task "${task.text}"? This cannot be undone.`)) return;
+    
+    setProjects(prev => prev.map(p => p.id !== projectId ? p : {
+      ...p,
+      tasks: p.tasks.filter(t => t.id !== task.id)
+    }));
+    
+    try {
+      await db.deleteTask(task.id, task.file_url);
+    } catch (e) {
+      console.error(e);
+      await refreshData();
+    }
+  };
+
+  // Editor bypass (manual override)
+  const handleEditorBypass = async (projectId, taskId, bypass) => {
+    setProjects(prev => prev.map(p => p.id !== projectId ? p : {
+      ...p,
+      tasks: p.tasks.map(t => t.id === taskId ? { ...t, editor_bypass: bypass, completed: bypass } : t)
+    }));
+    
+    try {
+      await db.bypassEditorTask(taskId, bypass);
+    } catch (e) {
+      console.error(e);
+      await refreshData();
+    }
+  };
+
+  // Client bypass (manual override)
+  const handleClientBypass = async (projectId, taskId, bypass) => {
+    setProjects(prev => prev.map(p => p.id !== projectId ? p : {
+      ...p,
+      tasks: p.tasks.map(t => t.id === taskId ? { ...t, client_bypass: bypass, completed: bypass, sent: bypass } : t)
+    }));
+    
+    try {
+      await db.bypassClientTask(taskId, bypass);
+    } catch (e) {
+      console.error(e);
+      await refreshData();
+    }
+  };
+
+  // Assign task to editor
+  const handleAssignEditor = async (taskId, projectId, data) => {
+    setProjects(prev => prev.map(p => p.id !== projectId ? p : {
+      ...p,
+      tasks: p.tasks.map(t => t.id === taskId ? { ...t, ...data, assigned_at: new Date().toISOString() } : t)
+    }));
+    
+    try {
+      await db.assignTaskToEditor(taskId, data.editor_id, data.editor_due_date, data.editor_notes, data.raw_files);
+    } catch (e) {
+      console.error(e);
+      await refreshData();
+    }
   };
 
   // Upload files using the queue
@@ -901,7 +1306,21 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                         </div>
                         <div className="p-5 sm:p-6 border-t border-gray-200 bg-gray-50">
                           <h4 className="font-medium text-sm mb-4 text-gray-900">🎬 Editor Tasks</h4>
-                          <div className="space-y-2">{editorTasks.map(t => <label key={t.id} className="flex items-center gap-3 p-3 bg-white rounded-xl border border-gray-200 cursor-pointer hover:border-gray-300 transition-colors"><input type="checkbox" checked={t.completed} onChange={() => toggleTask(project.id, t.id, t.completed)} className="w-4 h-4 rounded" /><span className={t.completed ? 'line-through text-gray-400' : 'text-gray-700'}>{t.text}</span></label>)}</div>
+                          <div className="space-y-2">{editorTasks.map(t => (
+                            <div key={t.id} className="flex items-center gap-3 p-3 bg-white rounded-xl border border-gray-200 hover:border-gray-300 transition-colors group">
+                              <input type="checkbox" checked={t.completed || t.editor_bypass} onChange={() => toggleTask(project.id, t.id, t.completed)} className="w-4 h-4 rounded" disabled={t.editor_bypass} />
+                              <span className={`flex-1 ${t.completed || t.editor_bypass ? 'line-through text-gray-400' : 'text-gray-700'}`}>{t.text}</span>
+                              <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <label className="flex items-center gap-1 text-xs text-gray-500 cursor-pointer" title="Manual bypass - mark as done without editor">
+                                  <input type="checkbox" checked={t.editor_bypass || false} onChange={(e) => handleEditorBypass(project.id, t.id, e.target.checked)} className="w-3 h-3" />
+                                  Bypass
+                                </label>
+                                <button onClick={() => setModal({ type: 'assignEditor', task: t, project, client })} className="text-xs text-blue-500 hover:text-blue-700 px-2">Assign</button>
+                                <button onClick={() => handleDeleteTask(project.id, t)} className="text-xs text-red-400 hover:text-red-600">🗑️</button>
+                              </div>
+                              {t.editor_id && <span className="text-xs text-purple-600 bg-purple-50 px-2 py-0.5 rounded">{editors.find(e => e.id === t.editor_id)?.name || 'Assigned'}</span>}
+                            </div>
+                          ))}</div>
                         </div>
                         <div className="p-5 sm:p-6 border-t border-gray-200">
                           <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 mb-4">
@@ -914,19 +1333,35 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">{clientTasks.map(t => {
                             const label = t.text.replace('Submit ', '').replace(' to client', '');
                             const uploadProgress = getUploadProgress(project.id, t.id);
-                            return (<div key={t.id} className={`p-4 rounded-xl border-2 transition-colors ${t.sent ? 'bg-green-50 border-green-200' : t.file_url ? 'bg-amber-50 border-amber-200' : 'bg-white border-gray-200 hover:border-gray-300'}`}>
-                              <div className="flex justify-between mb-3"><span className="font-medium text-sm text-gray-900">{label}</span>{t.sent && <span className="text-green-600 text-xs font-medium">✓ Sent</span>}{t.file_url && t.file_url !== 'uploading' && !t.sent && <span className="text-amber-600 text-xs font-medium">Ready to Send</span>}{t.file_url === 'uploading' && <span className="text-blue-600 text-xs font-medium">Uploading...</span>}</div>
+                            const isBypassed = t.client_bypass;
+                            return (<div key={t.id} className={`p-4 rounded-xl border-2 transition-colors group ${isBypassed ? 'bg-gray-50 border-gray-300' : t.sent ? 'bg-green-50 border-green-200' : t.file_url ? 'bg-amber-50 border-amber-200' : 'bg-white border-gray-200 hover:border-gray-300'}`}>
+                              <div className="flex justify-between items-start mb-3">
+                                <span className={`font-medium text-sm ${isBypassed ? 'text-gray-400 line-through' : 'text-gray-900'}`}>{label}</span>
+                                <div className="flex items-center gap-2">
+                                  {isBypassed && <span className="text-gray-500 text-xs font-medium">⚡ Bypassed</span>}
+                                  {t.sent && !isBypassed && <span className="text-green-600 text-xs font-medium">✓ Sent</span>}
+                                  {t.file_url && t.file_url !== 'uploading' && !t.sent && !isBypassed && <span className="text-amber-600 text-xs font-medium">Ready to Send</span>}
+                                  {t.file_url === 'uploading' && <span className="text-blue-600 text-xs font-medium">Uploading...</span>}
+                                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer" title="Manual bypass - mark as sent without uploading">
+                                      <input type="checkbox" checked={isBypassed || false} onChange={(e) => handleClientBypass(project.id, t.id, e.target.checked)} className="w-3 h-3" />
+                                      Bypass
+                                    </label>
+                                    <button onClick={() => handleDeleteTask(project.id, t)} className="text-xs text-red-400 hover:text-red-600 ml-1">🗑️</button>
+                                  </div>
+                                </div>
+                              </div>
                               {t.sent ? (
                                 <div>
                                   <p className="text-sm text-gray-600 mb-2">📎 {t.file_name}</p>
-                                  <DownloadLink fileUrl={t.file_url} />
+                                  <a href={t.file_url} target="_blank" rel="noopener noreferrer" download className="text-xs text-gray-500 hover:text-black">📥 Download</a>
                                 </div>
                               ) : t.file_url ? (
                                 <div>
                                   <p className="text-sm text-gray-700 mb-2">📎 {t.file_name}</p>
                                   {t.file_url !== 'uploading' && (
                                     <div className="flex gap-3">
-                                      <DownloadLink fileUrl={t.file_url} />
+                                      <a href={t.file_url} target="_blank" rel="noopener noreferrer" download className="text-xs text-gray-500 hover:text-black">📥 Download</a>
                                       <button onClick={() => removeFile(project.id, t.id, t.file_url)} className="text-xs text-red-500 hover:text-red-700">Remove</button>
                                     </div>
                                   )}
@@ -983,6 +1418,7 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
       {modal?.type === 'editNotes' && <EditNotesModal client={modal.client} onClose={() => setModal(null)} onSave={async (n) => { await updateClientNotes(modal.client.id, n); setModal(null); }} />}
       {modal?.type === 'deleteProject' && <DeleteProjectModal project={modal.project} onClose={() => setModal(null)} onDelete={async () => { await deleteProject(modal.project.id); setModal(null); }} />}
       {modal?.type === 'sendToClient' && <SendToClientModal project={modal.project} tasks={modal.tasks} client={modal.client} onClose={() => setModal(null)} onSend={async (ids) => { const ok = await sendToClient(modal.project, ids, modal.client); if (ok) setModal(null); }} />}
+      {modal?.type === 'assignEditor' && <AssignEditorModal task={modal.task} project={modal.project} client={modal.client} editors={editors} assets={assets} onClose={() => setModal(null)} onSave={async (data) => { await handleAssignEditor(modal.task.id, modal.project.id, data); setModal(null); }} addToQueue={addToQueue} />}
     </div>
   );
 }
@@ -1057,15 +1493,16 @@ function Database({ clients, setClients, services, setServices, editors, setEdit
   return (
     <div className="flex-1 overflow-auto">
       <div className="bg-white border-b p-3 sm:p-4"><div className="flex items-center gap-2 mb-4"><button onClick={() => setSidebarOpen(true)} className="lg:hidden text-xl">☰</button><h1 className="text-lg font-bold">Database</h1></div><div className="flex gap-2">{['clients', 'services', 'editors'].map(t => <button key={t} onClick={() => setTab(t)} className={`px-3 py-2 rounded-lg text-sm capitalize ${tab === t ? 'bg-purple-600 text-white' : 'bg-gray-100'}`}>{t}</button>)}</div></div>
-      <div className="p-3 sm:p-4"><div className="flex justify-end mb-4"><button onClick={() => setModal({ item: null })} className="bg-purple-600 text-white px-3 py-2 rounded-lg text-sm">+ Add</button></div><div className="space-y-2">{data.map(item => <div key={item.id} className="bg-white rounded-lg border p-3 flex justify-between items-start"><div className="flex-1 min-w-0"><p className="font-medium">{item.avatar || ''} {item.name}</p><p className="text-xs text-gray-500 truncate">{item.email || item.tasks?.join(', ')}</p>{item.notes && <p className="text-xs text-gray-400 mt-1">{item.notes}</p>}</div><div className="flex gap-2 flex-shrink-0"><button onClick={() => setModal({ item })} className="text-purple-600 text-sm">Edit</button><button onClick={() => handleDelete(tab, item.id)} className="text-red-600 text-sm">Delete</button></div></div>)}</div></div>
+      <div className="p-3 sm:p-4"><div className="flex justify-end mb-4"><button onClick={() => setModal({ item: null })} className="bg-purple-600 text-white px-3 py-2 rounded-lg text-sm">+ Add</button></div><div className="space-y-2">{data.map(item => <div key={item.id} className="bg-white rounded-lg border p-3 flex justify-between items-start"><div className="flex-1 min-w-0"><p className="font-medium">{item.avatar || ''} {item.name}</p><p className="text-xs text-gray-500 truncate">{tab === 'editors' ? `@${item.username}` : (item.email || item.tasks?.join(', '))}</p>{item.email && tab === 'editors' && <p className="text-xs text-gray-400">{item.email}</p>}{item.notes && <p className="text-xs text-gray-400 mt-1">{item.notes}</p>}</div><div className="flex gap-2 flex-shrink-0"><button onClick={() => setModal({ item })} className="text-purple-600 text-sm">Edit</button><button onClick={() => handleDelete(tab, item.id)} className="text-red-600 text-sm">Delete</button></div></div>)}</div></div>
       {modal && <DatabaseModal tab={tab} item={modal.item} onClose={() => setModal(null)} onSave={(i) => handleSave(tab, modal.item ? { ...i, id: modal.item.id } : i, !!modal.item)} />}
     </div>
   );
 }
 
 function DatabaseModal({ tab, item, onClose, onSave }) {
-  const [form, setForm] = useState(item || { name: '', email: '', notes: '', tasks: [], additional_emails: [] });
+  const [form, setForm] = useState(item || { name: '', email: '', notes: '', tasks: [], additional_emails: [], username: '', password: '' });
   const [additionalEmailInput, setAdditionalEmailInput] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   
   const addAdditionalEmail = () => {
     const email = additionalEmailInput.trim();
@@ -1083,19 +1520,114 @@ function DatabaseModal({ tab, item, onClose, onSave }) {
   
   const save = () => {
     if (!form.name?.trim()) { alert('Name required'); return; }
-    if (tab !== 'services' && !form.email?.trim()) { alert('Email required'); return; }
+    if (tab === 'clients' && !form.email?.trim()) { alert('Email required'); return; }
     const tasks = typeof form.tasks === 'string' ? form.tasks.split(',').map(t => t.trim()).filter(Boolean) : form.tasks;
     
     if (tab === 'services') {
       onSave({ name: form.name, tasks });
     } else if (tab === 'editors') {
-      onSave({ name: form.name, email: form.email, avatar: item?.avatar || '👤' });
+      if (!item && !form.username?.trim()) { alert('Username required'); return; }
+      if (!item && !form.password?.trim()) { alert('Password required for new editor'); return; }
+      const editorData = { name: form.name, email: form.email || '' };
+      if (!item) editorData.username = form.username;
+      if (form.password) editorData.password = form.password;
+      onSave(editorData);
     } else {
       onSave({ name: form.name, email: form.email, notes: form.notes, additional_emails: form.additional_emails || [] });
     }
   };
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-auto"><div className="p-4 border-b flex justify-between"><h2 className="text-lg font-bold">{item ? 'Edit' : 'Add'} {tab.slice(0,-1)}</h2><button onClick={onClose} className="text-2xl text-gray-400">&times;</button></div><div className="p-4 space-y-4"><div><label className="block text-sm font-medium mb-1">Name *</label><input value={form.name || ''} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div>{tab !== 'services' && <div><label className="block text-sm font-medium mb-1">Email *</label><input value={form.email || ''} onChange={e => setForm({ ...form, email: e.target.value })} className="w-full border rounded-lg px-3 py-2" /></div>}{tab === 'clients' && <div><label className="block text-sm font-medium mb-1">Additional Emails</label><div className="flex gap-2 mb-2"><input value={additionalEmailInput} onChange={e => setAdditionalEmailInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addAdditionalEmail())} placeholder="marketing@company.com" className="flex-1 border rounded-lg px-3 py-2 text-sm" /><button type="button" onClick={addAdditionalEmail} className="px-3 py-2 bg-gray-100 rounded-lg text-sm hover:bg-gray-200">+ Add</button></div>{form.additional_emails?.length > 0 && <div className="flex flex-wrap gap-2">{form.additional_emails.map(email => <span key={email} className="inline-flex items-center gap-1 bg-purple-100 text-purple-700 px-2 py-1 rounded-full text-xs">{email}<button type="button" onClick={() => removeAdditionalEmail(email)} className="text-purple-500 hover:text-purple-700">&times;</button></span>)}</div>}</div>}{tab === 'clients' && <div><label className="block text-sm font-medium mb-1">Notes</label><textarea value={form.notes || ''} onChange={e => setForm({ ...form, notes: e.target.value })} className="w-full border rounded-lg px-3 py-2" rows={2} /></div>}{tab === 'services' && <div><label className="block text-sm font-medium mb-1">Tasks * (comma separated)</label><textarea value={Array.isArray(form.tasks) ? form.tasks.join(', ') : form.tasks || ''} onChange={e => setForm({ ...form, tasks: e.target.value })} className="w-full border rounded-lg px-3 py-2" rows={3} /></div>}<button onClick={save} className="w-full bg-purple-600 text-white py-2 rounded-lg font-medium">Save</button></div></div></div>
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-auto">
+        <div className="p-4 border-b flex justify-between">
+          <h2 className="text-lg font-bold">{item ? 'Edit' : 'Add'} {tab.slice(0,-1)}</h2>
+          <button onClick={onClose} className="text-2xl text-gray-400">&times;</button>
+        </div>
+        <div className="p-4 space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Name *</label>
+            <input value={form.name || ''} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full border rounded-lg px-3 py-2" />
+          </div>
+          
+          {/* Editor-specific fields */}
+          {tab === 'editors' && (
+            <>
+              <div>
+                <label className="block text-sm font-medium mb-1">Username {!item && '*'}</label>
+                <input 
+                  value={form.username || ''} 
+                  onChange={e => setForm({ ...form, username: e.target.value })} 
+                  className="w-full border rounded-lg px-3 py-2"
+                  disabled={!!item}
+                  placeholder={item ? item.username : 'login username'}
+                />
+                {item && <p className="text-xs text-gray-500 mt-1">Username cannot be changed</p>}
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Password {!item && '*'}</label>
+                <div className="relative">
+                  <input 
+                    type={showPassword ? 'text' : 'password'}
+                    value={form.password || ''} 
+                    onChange={e => setForm({ ...form, password: e.target.value })} 
+                    className="w-full border rounded-lg px-3 py-2 pr-10"
+                    placeholder={item ? 'Leave blank to keep current' : 'Set password'}
+                  />
+                  <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">
+                    {showPassword ? '🙈' : '👁️'}
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Email (optional)</label>
+                <input value={form.email || ''} onChange={e => setForm({ ...form, email: e.target.value })} className="w-full border rounded-lg px-3 py-2" placeholder="editor@email.com" />
+              </div>
+            </>
+          )}
+          
+          {/* Client fields */}
+          {tab === 'clients' && (
+            <>
+              <div>
+                <label className="block text-sm font-medium mb-1">Email *</label>
+                <input value={form.email || ''} onChange={e => setForm({ ...form, email: e.target.value })} className="w-full border rounded-lg px-3 py-2" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Additional Emails</label>
+                <div className="flex gap-2 mb-2">
+                  <input value={additionalEmailInput} onChange={e => setAdditionalEmailInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addAdditionalEmail())} placeholder="marketing@company.com" className="flex-1 border rounded-lg px-3 py-2 text-sm" />
+                  <button type="button" onClick={addAdditionalEmail} className="px-3 py-2 bg-gray-100 rounded-lg text-sm hover:bg-gray-200">+ Add</button>
+                </div>
+                {form.additional_emails?.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {form.additional_emails.map(email => (
+                      <span key={email} className="inline-flex items-center gap-1 bg-purple-100 text-purple-700 px-2 py-1 rounded-full text-xs">
+                        {email}
+                        <button type="button" onClick={() => removeAdditionalEmail(email)} className="text-purple-500 hover:text-purple-700">&times;</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Notes</label>
+                <textarea value={form.notes || ''} onChange={e => setForm({ ...form, notes: e.target.value })} className="w-full border rounded-lg px-3 py-2" rows={2} />
+              </div>
+            </>
+          )}
+          
+          {/* Service fields */}
+          {tab === 'services' && (
+            <div>
+              <label className="block text-sm font-medium mb-1">Tasks * (comma separated)</label>
+              <textarea value={Array.isArray(form.tasks) ? form.tasks.join(', ') : form.tasks || ''} onChange={e => setForm({ ...form, tasks: e.target.value })} className="w-full border rounded-lg px-3 py-2" rows={3} />
+            </div>
+          )}
+          
+          <button onClick={save} className="w-full bg-purple-600 text-white py-2 rounded-lg font-medium">Save</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1156,4 +1688,356 @@ function SendToClientModal({ project, tasks, client, onClose, onSend }) {
   if (sent) return <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-2xl max-w-md w-full p-8 text-center"><p className="text-6xl mb-4">✅</p><p className="text-xl font-bold text-green-700">Email Sent!</p><p className="text-gray-500">Magic link sent to {client?.email}</p><button onClick={onClose} className="mt-4 bg-purple-600 text-white px-6 py-2 rounded-lg">Done</button></div></div>;
   const allEmails = [client?.email, ...(client?.additional_emails || [])].filter(Boolean);
   return <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-2xl max-w-lg w-full"><div className="p-4 border-b bg-green-50"><h2 className="text-lg font-bold text-green-700">📤 Send to Client</h2></div><div className="p-4 space-y-4"><div className="bg-gray-50 rounded-lg p-3 text-sm"><p><strong>Project:</strong> {project.name}</p><p><strong>To:</strong> {client?.email}{client?.additional_emails?.length > 0 && <span className="text-gray-500"> + {client.additional_emails.length} more</span>}</p>{client?.additional_emails?.length > 0 && <div className="mt-1 flex flex-wrap gap-1">{client.additional_emails.map(e => <span key={e} className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">{e}</span>)}</div>}</div><div className="space-y-2 max-h-48 overflow-auto">{tasks.map(t => <label key={t.id} className={`flex items-center gap-3 p-3 rounded-lg border-2 cursor-pointer ${selected[t.id] ? 'border-green-400 bg-green-50' : 'border-gray-200'}`}><input type="checkbox" checked={selected[t.id]} onChange={() => setSelected({ ...selected, [t.id]: !selected[t.id] })} className="w-4 h-4" /><div><p className="font-medium text-sm">{t.text.replace('Submit ', '').replace(' to client', '')}</p><p className="text-xs text-gray-500">📎 {t.file_name}</p></div></label>)}</div><div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800">📧 Email will be sent to {allEmails.length} recipient{allEmails.length > 1 ? 's' : ''}</div><div className="flex gap-3"><button onClick={onClose} className="flex-1 border py-2 rounded-lg">Cancel</button><button onClick={send} disabled={!ids.length || sending} className="flex-1 bg-green-600 text-white py-2 rounded-lg disabled:opacity-50">{sending ? '⏳ Sending...' : `Send ${ids.length} File${ids.length > 1 ? 's' : ''}`}</button></div></div></div></div>;
+}
+
+// =============================================
+// ASSIGN EDITOR MODAL
+// =============================================
+function AssignEditorModal({ task, project, client, editors, assets, onClose, onSave, onUploadRaw, addToQueue }) {
+  const [form, setForm] = useState({
+    editor_id: task.editor_id || '',
+    editor_due_date: task.editor_due_date || '',
+    editor_notes: task.editor_notes || '',
+    raw_files: task.raw_files || [],
+    selected_assets: []
+  });
+  const [uploading, setUploading] = useState(false);
+  
+  // Get client assets
+  const clientAssets = assets?.filter(a => a.client_id === project?.client_id) || [];
+  
+  const handleRawFileUpload = async (files) => {
+    setUploading(true);
+    const fileArray = Array.from(files);
+    const newRawFiles = [];
+    
+    for (const file of fileArray) {
+      try {
+        const result = await db.uploadFile(project.id, file, () => {}, () => {});
+        newRawFiles.push({
+          name: file.name,
+          url: result.fileUrl,
+          size: file.size,
+          uploaded_at: new Date().toISOString()
+        });
+      } catch (e) {
+        console.error('Raw file upload failed:', e);
+      }
+    }
+    
+    setForm(prev => ({ ...prev, raw_files: [...prev.raw_files, ...newRawFiles] }));
+    setUploading(false);
+  };
+  
+  const removeRawFile = (index) => {
+    setForm(prev => ({
+      ...prev,
+      raw_files: prev.raw_files.filter((_, i) => i !== index)
+    }));
+  };
+  
+  const save = () => {
+    if (!form.editor_id) { alert('Please select an editor'); return; }
+    if (!form.editor_due_date) { alert('Please set a due date'); return; }
+    onSave({
+      editor_id: form.editor_id,
+      editor_due_date: form.editor_due_date,
+      editor_notes: form.editor_notes,
+      raw_files: form.raw_files
+    });
+  };
+  
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-auto">
+        <div className="p-4 border-b bg-blue-50">
+          <h2 className="text-lg font-bold text-blue-700">🎬 Assign to Editor</h2>
+          <p className="text-sm text-blue-600 mt-1">{task.text}</p>
+        </div>
+        <div className="p-4 space-y-4">
+          {/* Editor Selection */}
+          <div>
+            <label className="block text-sm font-medium mb-1">Editor *</label>
+            <select value={form.editor_id} onChange={e => setForm({ ...form, editor_id: e.target.value })} className="w-full border rounded-lg px-3 py-2">
+              <option value="">Select editor...</option>
+              {editors.map(e => <option key={e.id} value={e.id}>{e.avatar || '👤'} {e.name}</option>)}
+            </select>
+          </div>
+          
+          {/* Due Date */}
+          <div>
+            <label className="block text-sm font-medium mb-1">Due Date *</label>
+            <input type="date" value={form.editor_due_date} onChange={e => setForm({ ...form, editor_due_date: e.target.value })} className="w-full border rounded-lg px-3 py-2" />
+          </div>
+          
+          {/* Notes */}
+          <div>
+            <label className="block text-sm font-medium mb-1">Notes for Editor</label>
+            <textarea value={form.editor_notes} onChange={e => setForm({ ...form, editor_notes: e.target.value })} className="w-full border rounded-lg px-3 py-2" rows={3} placeholder="Any special instructions..." />
+          </div>
+          
+          {/* Raw Files Upload */}
+          <div>
+            <label className="block text-sm font-medium mb-2">Raw Files</label>
+            <div 
+              className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center cursor-pointer hover:bg-gray-50 transition-colors"
+              onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('border-blue-500', 'bg-blue-50'); }}
+              onDragLeave={e => { e.preventDefault(); e.currentTarget.classList.remove('border-blue-500', 'bg-blue-50'); }}
+              onDrop={e => { 
+                e.preventDefault(); 
+                e.currentTarget.classList.remove('border-blue-500', 'bg-blue-50');
+                if (e.dataTransfer.files?.length) handleRawFileUpload(e.dataTransfer.files);
+              }}
+              onClick={() => document.getElementById('raw-file-input').click()}
+            >
+              {uploading ? (
+                <p className="text-blue-600">⏳ Uploading...</p>
+              ) : (
+                <>
+                  <p className="text-gray-500">📁 Drop raw files or click to upload</p>
+                  <p className="text-xs text-gray-400 mt-1">Video, photos, etc.</p>
+                </>
+              )}
+              <input id="raw-file-input" type="file" multiple className="hidden" onChange={e => e.target.files?.length && handleRawFileUpload(e.target.files)} />
+            </div>
+            
+            {/* Uploaded Raw Files List */}
+            {form.raw_files.length > 0 && (
+              <div className="mt-2 space-y-1">
+                {form.raw_files.map((f, i) => (
+                  <div key={i} className="flex items-center justify-between bg-gray-50 rounded px-3 py-2 text-sm">
+                    <span className="truncate flex-1">{f.name}</span>
+                    <button onClick={() => removeRawFile(i)} className="text-red-500 text-xs ml-2">✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          
+          {/* Client Assets */}
+          {clientAssets.length > 0 && (
+            <div>
+              <label className="block text-sm font-medium mb-2">Client Assets</label>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-40 overflow-auto">
+                {clientAssets.map(asset => (
+                  <label key={asset.id} className={`flex items-center gap-2 p-2 border rounded-lg cursor-pointer text-xs ${form.selected_assets.includes(asset.id) ? 'border-blue-400 bg-blue-50' : 'border-gray-200'}`}>
+                    <input 
+                      type="checkbox" 
+                      checked={form.selected_assets.includes(asset.id)} 
+                      onChange={e => {
+                        if (e.target.checked) {
+                          setForm({ ...form, selected_assets: [...form.selected_assets, asset.id] });
+                        } else {
+                          setForm({ ...form, selected_assets: form.selected_assets.filter(id => id !== asset.id) });
+                        }
+                      }} 
+                      className="w-3 h-3" 
+                    />
+                    <span className="truncate">{asset.name}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          <div className="flex gap-3 pt-2">
+            <button onClick={onClose} className="flex-1 border py-2 rounded-lg">Cancel</button>
+            <button onClick={save} className="flex-1 bg-blue-600 text-white py-2 rounded-lg">Assign to Editor</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// =============================================
+// EDITOR PORTAL (Coming Soon Placeholder with Login)
+// =============================================
+function EditorPortal() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [editor, setEditor] = useState(null);
+  const [tasks, setTasks] = useState([]);
+  
+  // Check for saved token
+  useEffect(() => {
+    const token = localStorage.getItem('editor_token');
+    if (token) {
+      validateToken(token);
+    }
+  }, []);
+  
+  const validateToken = async (token) => {
+    try {
+      const editorData = await db.validateEditorToken(token);
+      if (editorData) {
+        setEditor(editorData);
+        loadEditorTasks(editorData.id);
+      } else {
+        localStorage.removeItem('editor_token');
+      }
+    } catch (e) {
+      console.error('Token validation failed:', e);
+      localStorage.removeItem('editor_token');
+    }
+  };
+  
+  const loadEditorTasks = async (editorId) => {
+    try {
+      const editorTasks = await db.getEditorTasks(editorId);
+      setTasks(editorTasks || []);
+    } catch (e) {
+      console.error('Failed to load tasks:', e);
+    }
+  };
+  
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    
+    try {
+      const editorData = await db.editorLogin(email, password);
+      localStorage.setItem('editor_token', editorData.access_token);
+      setEditor(editorData);
+      loadEditorTasks(editorData.id);
+    } catch (err) {
+      setError('Invalid email or password');
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  const handleLogout = async () => {
+    if (editor) {
+      try {
+        await db.editorLogout(editor.id);
+      } catch (e) {
+        console.error('Logout error:', e);
+      }
+    }
+    localStorage.removeItem('editor_token');
+    setEditor(null);
+    setTasks([]);
+  };
+  
+  // Not logged in - show login form
+  if (!editor) {
+    return (
+      <div className="h-full flex items-center justify-center bg-gray-50">
+        <div className="bg-white rounded-2xl shadow-lg p-8 w-full max-w-md">
+          <div className="text-center mb-6">
+            <div className="w-16 h-16 bg-blue-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+              <span className="text-3xl">🎬</span>
+            </div>
+            <h1 className="text-2xl font-bold text-gray-800">Editor Portal</h1>
+            <p className="text-gray-500 mt-2">Sign in to view your assigned tasks</p>
+          </div>
+          <form onSubmit={handleLogin}>
+            <input 
+              type="email" 
+              value={email} 
+              onChange={(e) => setEmail(e.target.value)} 
+              placeholder="Email" 
+              className="w-full px-4 py-3 border rounded-xl mb-3" 
+              required 
+            />
+            <input 
+              type="password" 
+              value={password} 
+              onChange={(e) => setPassword(e.target.value)} 
+              placeholder="Password" 
+              className="w-full px-4 py-3 border rounded-xl mb-3" 
+              required 
+            />
+            {error && <p className="text-red-500 text-sm mb-3">{error}</p>}
+            <button 
+              type="submit" 
+              disabled={loading}
+              className="w-full bg-blue-600 text-white py-3 rounded-xl font-medium hover:bg-blue-700 transition disabled:opacity-50"
+            >
+              {loading ? '⏳ Signing in...' : 'Sign In'}
+            </button>
+          </form>
+          <p className="text-center text-sm text-gray-400 mt-4">
+            Contact admin for account setup
+          </p>
+        </div>
+      </div>
+    );
+  }
+  
+  // Logged in - show tasks
+  return (
+    <div className="h-full flex flex-col bg-gray-50">
+      {/* Header */}
+      <div className="bg-white border-b px-4 py-3 flex items-center justify-between">
+        <div>
+          <h1 className="font-bold text-lg">👋 Welcome, {editor.name}</h1>
+          <p className="text-sm text-gray-500">{tasks.length} task{tasks.length !== 1 ? 's' : ''} assigned</p>
+        </div>
+        <button onClick={handleLogout} className="text-gray-500 hover:text-black text-sm">🚪 Logout</button>
+      </div>
+      
+      {/* Tasks */}
+      <div className="flex-1 overflow-auto p-4">
+        {tasks.length === 0 ? (
+          <div className="text-center py-16 text-gray-400">
+            <p className="text-5xl mb-4">✅</p>
+            <p className="text-lg">No tasks assigned</p>
+            <p className="text-sm mt-2">Check back later for new assignments</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {tasks.map(task => {
+              const project = task.project;
+              const client = project?.client;
+              const isOverdue = task.editor_due_date && new Date(task.editor_due_date) < new Date();
+              
+              return (
+                <div key={task.id} className={`bg-white rounded-xl border p-4 ${task.completed ? 'opacity-60' : ''}`}>
+                  <div className="flex items-start justify-between mb-2">
+                    <div>
+                      <h3 className="font-medium text-gray-900">{task.text}</h3>
+                      <p className="text-sm text-gray-500">{project?.name} • {client?.name}</p>
+                    </div>
+                    <div className="text-right">
+                      {task.completed ? (
+                        <span className="text-green-600 text-sm font-medium">✓ Complete</span>
+                      ) : (
+                        <span className={`text-sm font-medium ${isOverdue ? 'text-red-600' : 'text-gray-600'}`}>
+                          {isOverdue ? '⚠️ Overdue' : `Due: ${new Date(task.editor_due_date).toLocaleDateString()}`}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  
+                  {task.editor_notes && (
+                    <div className="bg-blue-50 rounded-lg p-3 mb-3 text-sm text-blue-800">
+                      <strong>Notes:</strong> {task.editor_notes}
+                    </div>
+                  )}
+                  
+                  {task.raw_files?.length > 0 && (
+                    <div className="mb-3">
+                      <p className="text-sm font-medium text-gray-700 mb-1">Raw Files:</p>
+                      <div className="flex flex-wrap gap-2">
+                        {task.raw_files.map((f, i) => (
+                          <a key={i} href={f.url} target="_blank" rel="noopener noreferrer" className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded hover:bg-gray-200">
+                            📁 {f.name}
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
