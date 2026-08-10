@@ -1526,11 +1526,10 @@ function DatabaseModal({ tab, item, onClose, onSave }) {
     if (tab === 'services') {
       onSave({ name: form.name, tasks });
     } else if (tab === 'editors') {
-      if (!item && !form.username?.trim()) { alert('Username required'); return; }
-      if (!item && !form.password?.trim()) { alert('Password required for new editor'); return; }
+      // Username/password optional until migration is run
       const editorData = { name: form.name, email: form.email || '' };
-      if (!item) editorData.username = form.username;
-      if (form.password) editorData.password = form.password;
+      if (form.username?.trim()) editorData.username = form.username;
+      if (form.password?.trim()) editorData.password = form.password;
       onSave(editorData);
     } else {
       onSave({ name: form.name, email: form.email, notes: form.notes, additional_emails: form.additional_emails || [] });
