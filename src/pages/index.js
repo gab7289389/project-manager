@@ -568,15 +568,23 @@ export default function App() {
   // Editor logged in - show only editor portal
   if (loginMode === 'editor') {
     return (
-      <div className="h-screen flex flex-col bg-gray-50">
-        <div className="bg-blue-600 text-white px-4 py-3 flex items-center justify-between">
+      <div className="h-screen flex flex-col bg-slate-900">
+        <div className="bg-slate-800 border-b border-slate-700 text-white px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <span className="text-xl">🎬</span>
-            <span className="font-medium">Editor Dashboard</span>
+            <div className="w-10 h-10 bg-gradient-to-br from-violet-500 to-indigo-600 rounded-xl flex items-center justify-center shadow-lg">
+              <span className="text-xl">🎬</span>
+            </div>
+            <div>
+              <span className="font-bold text-lg">Editor Dashboard</span>
+              <p className="text-xs text-slate-400">DXTR Visions</p>
+            </div>
           </div>
           <div className="flex items-center gap-4">
-            <span className="text-sm opacity-90">Welcome, {editorInfo?.name || 'Editor'}</span>
-            <button onClick={handleLogout} className="text-white/70 hover:text-white text-sm">Logout</button>
+            <div className="text-right">
+              <span className="text-sm font-medium text-white">{editorInfo?.name || 'Editor'}</span>
+              <p className="text-xs text-slate-400">Logged in</p>
+            </div>
+            <button onClick={handleLogout} className="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">Logout</button>
           </div>
         </div>
         <div className="flex-1 overflow-hidden">
@@ -719,9 +727,13 @@ function EditorPortalDashboard({ editorId, editorName }) {
   };
   
   const handleUploadFinal = async (taskId, projectId, file) => {
+    if (!projectId) {
+      alert('Error: No project ID. Please contact admin.');
+      return;
+    }
     setUploading(taskId);
     try {
-      const result = await db.uploadFile(projectId, file, () => {}, () => {});
+      const result = await db.uploadEditorFile(projectId, file);
       await db.updateTask(taskId, { 
         file_url: result.fileUrl,
         file_name: file.name,
@@ -738,7 +750,7 @@ function EditorPortalDashboard({ editorId, editorName }) {
       alert('✅ File uploaded! Waiting for admin review.');
     } catch (e) {
       console.error('Upload failed:', e);
-      alert('Upload failed. Please try again.');
+      alert('Upload failed: ' + e.message);
     }
     setUploading(null);
   };
@@ -763,7 +775,7 @@ function EditorPortalDashboard({ editorId, editorName }) {
   };
   
   if (loading) {
-    return <div className="h-full flex items-center justify-center bg-gray-50"><div className="animate-spin text-4xl">⏳</div></div>;
+    return <div className="h-full flex items-center justify-center bg-slate-900"><div className="animate-spin text-4xl">⏳</div></div>;
   }
   
   // Group by status
@@ -779,24 +791,24 @@ function EditorPortalDashboard({ editorId, editorName }) {
   });
   
   return (
-    <div className="h-full flex flex-col bg-gray-50 overflow-auto">
-      {/* Stats */}
-      <div className="px-4 py-3 grid grid-cols-4 gap-3">
-        <div className="bg-white rounded-xl p-3 border border-gray-200 text-center">
-          <p className="text-xl font-bold text-gray-900">{pendingTasks.length}</p>
-          <p className="text-xs text-gray-500">To Do</p>
+    <div className="h-full flex flex-col bg-slate-900 overflow-auto">
+      {/* Stats - Dark themed with vibrant accents */}
+      <div className="px-4 py-4 grid grid-cols-4 gap-3">
+        <div className="bg-slate-800 rounded-xl p-3 border border-slate-700 text-center shadow-lg">
+          <p className="text-2xl font-bold text-white">{pendingTasks.length}</p>
+          <p className="text-xs text-slate-400 font-medium uppercase tracking-wide">To Do</p>
         </div>
-        <div className="bg-yellow-50 rounded-xl p-3 border border-yellow-200 text-center">
-          <p className="text-xl font-bold text-yellow-600">{submittedTasks.length}</p>
-          <p className="text-xs text-yellow-600">Pending Review</p>
+        <div className="bg-amber-500/20 rounded-xl p-3 border border-amber-500/50 text-center shadow-lg">
+          <p className="text-2xl font-bold text-amber-400">{submittedTasks.length}</p>
+          <p className="text-xs text-amber-400 font-medium uppercase tracking-wide">In Review</p>
         </div>
-        <div className="bg-red-50 rounded-xl p-3 border border-red-200 text-center">
-          <p className="text-xl font-bold text-red-600">{rejectedTasks.length}</p>
-          <p className="text-xs text-red-600">Needs Revision</p>
+        <div className="bg-red-500/20 rounded-xl p-3 border border-red-500/50 text-center shadow-lg">
+          <p className="text-2xl font-bold text-red-400">{rejectedTasks.length}</p>
+          <p className="text-xs text-red-400 font-medium uppercase tracking-wide">Revisions</p>
         </div>
-        <div className="bg-green-50 rounded-xl p-3 border border-green-200 text-center">
-          <p className="text-xl font-bold text-green-600">{completedTasks.length}</p>
-          <p className="text-xs text-green-600">Approved</p>
+        <div className="bg-emerald-500/20 rounded-xl p-3 border border-emerald-500/50 text-center shadow-lg">
+          <p className="text-2xl font-bold text-emerald-400">{completedTasks.length}</p>
+          <p className="text-xs text-emerald-400 font-medium uppercase tracking-wide">Approved</p>
         </div>
       </div>
       
@@ -806,8 +818,9 @@ function EditorPortalDashboard({ editorId, editorName }) {
         {/* Rejected Tasks - Show First */}
         {rejectedTasks.length > 0 && (
           <div>
-            <h2 className="text-sm font-semibold text-red-700 mb-2 flex items-center gap-2">
-              <span>⚠️ Needs Revision</span>
+            <h2 className="text-sm font-bold text-red-400 mb-3 flex items-center gap-2 uppercase tracking-wide">
+              <span className="w-6 h-6 bg-red-500 rounded-full flex items-center justify-center text-white text-xs">!</span>
+              <span>Needs Revision</span>
             </h2>
             <div className="space-y-3">
               {rejectedTasks.map(task => (
@@ -816,7 +829,7 @@ function EditorPortalDashboard({ editorId, editorName }) {
                   task={task} 
                   expanded={expanded === task.id}
                   onToggle={() => setExpanded(expanded === task.id ? null : task.id)}
-                  onUpload={(file) => handleUploadFinal(task.id, task.project?.id, file)}
+                  onUpload={(file) => handleUploadFinal(task.id, task.project_id || task.project?.id, file)}
                   uploading={uploading === task.id}
                   clientAssets={clientAssets[task.project?.client?.id] || []}
                   formatDate={formatDate}
@@ -832,7 +845,10 @@ function EditorPortalDashboard({ editorId, editorName }) {
         {/* Pending Tasks */}
         {pendingTasks.length > 0 && (
           <div>
-            <h2 className="text-sm font-semibold text-gray-700 mb-2">📋 To Do ({pendingTasks.length})</h2>
+            <h2 className="text-sm font-bold text-slate-300 mb-3 flex items-center gap-2 uppercase tracking-wide">
+              <span className="w-6 h-6 bg-slate-600 rounded-full flex items-center justify-center text-white text-xs">📋</span>
+              <span>To Do ({pendingTasks.length})</span>
+            </h2>
             <div className="space-y-3">
               {pendingTasks.map(task => (
                 <TaskCard 
@@ -840,7 +856,7 @@ function EditorPortalDashboard({ editorId, editorName }) {
                   task={task} 
                   expanded={expanded === task.id}
                   onToggle={() => setExpanded(expanded === task.id ? null : task.id)}
-                  onUpload={(file) => handleUploadFinal(task.id, task.project?.id, file)}
+                  onUpload={(file) => handleUploadFinal(task.id, task.project_id || task.project?.id, file)}
                   uploading={uploading === task.id}
                   clientAssets={clientAssets[task.project?.client?.id] || []}
                   formatDate={formatDate}
@@ -856,19 +872,22 @@ function EditorPortalDashboard({ editorId, editorName }) {
         {/* Submitted / Pending Review */}
         {submittedTasks.length > 0 && (
           <div>
-            <h2 className="text-sm font-semibold text-yellow-700 mb-2">⏳ Waiting for Review ({submittedTasks.length})</h2>
+            <h2 className="text-sm font-bold text-amber-400 mb-3 flex items-center gap-2 uppercase tracking-wide">
+              <span className="w-6 h-6 bg-amber-500 rounded-full flex items-center justify-center text-white text-xs">⏳</span>
+              <span>Waiting for Review ({submittedTasks.length})</span>
+            </h2>
             <div className="space-y-2">
               {submittedTasks.map(task => (
-                <div key={task.id} className="bg-yellow-50 border border-yellow-200 rounded-xl p-3">
+                <div key={task.id} className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 backdrop-blur">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="font-medium text-gray-900">{task.project?.name}</p>
-                      <p className="text-sm text-gray-500">{getTaskType(task.text)} • {task.project?.client?.name}</p>
+                      <p className="font-semibold text-white">{task.project?.name}</p>
+                      <p className="text-sm text-slate-400">{getTaskType(task.text)} • {task.project?.client?.name}</p>
                     </div>
-                    <span className="text-xs bg-yellow-200 text-yellow-800 px-2 py-1 rounded-full">Pending Review</span>
+                    <span className="text-xs bg-amber-500/30 text-amber-300 px-3 py-1 rounded-full font-medium border border-amber-500/50">In Review</span>
                   </div>
                   {task.file_name && (
-                    <p className="text-xs text-gray-500 mt-2">📎 Submitted: {task.file_name}</p>
+                    <p className="text-xs text-slate-400 mt-2">📎 {task.file_name}</p>
                   )}
                 </div>
               ))}
@@ -879,16 +898,19 @@ function EditorPortalDashboard({ editorId, editorName }) {
         {/* Completed */}
         {completedTasks.length > 0 && (
           <div>
-            <h2 className="text-sm font-semibold text-green-700 mb-2">✅ Approved ({completedTasks.length})</h2>
+            <h2 className="text-sm font-bold text-emerald-400 mb-3 flex items-center gap-2 uppercase tracking-wide">
+              <span className="w-6 h-6 bg-emerald-500 rounded-full flex items-center justify-center text-white text-xs">✓</span>
+              <span>Approved ({completedTasks.length})</span>
+            </h2>
             <div className="space-y-2">
               {completedTasks.slice(0, 5).map(task => (
-                <div key={task.id} className="bg-green-50 border border-green-200 rounded-xl p-3 opacity-70">
-                  <p className="font-medium text-gray-700">{task.project?.name}</p>
-                  <p className="text-sm text-gray-500">{getTaskType(task.text)} • {task.project?.client?.name}</p>
+                <div key={task.id} className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-3 opacity-70">
+                  <p className="font-medium text-slate-300">{task.project?.name}</p>
+                  <p className="text-sm text-slate-500">{getTaskType(task.text)} • {task.project?.client?.name}</p>
                 </div>
               ))}
               {completedTasks.length > 5 && (
-                <p className="text-sm text-gray-400 text-center">+ {completedTasks.length - 5} more</p>
+                <p className="text-sm text-slate-500 text-center">+ {completedTasks.length - 5} more</p>
               )}
             </div>
           </div>
@@ -898,8 +920,8 @@ function EditorPortalDashboard({ editorId, editorName }) {
         {pendingTasks.length === 0 && submittedTasks.length === 0 && rejectedTasks.length === 0 && (
           <div className="text-center py-16">
             <p className="text-6xl mb-4">🎉</p>
-            <p className="text-xl font-medium text-gray-600">All caught up!</p>
-            <p className="text-gray-400 mt-2">No pending tasks</p>
+            <p className="text-xl font-medium text-white">All caught up!</p>
+            <p className="text-slate-400 mt-2">No pending tasks</p>
           </div>
         )}
       </div>
@@ -914,76 +936,80 @@ function TaskCard({ task, expanded, onToggle, onUpload, uploading, clientAssets,
   const isOverdue = daysUntil !== null && daysUntil < 0;
   const isDueSoon = daysUntil !== null && daysUntil >= 0 && daysUntil <= 3;
   
-  const borderColor = status === 'rejected' ? 'border-red-400 bg-red-50' : 
-                      isOverdue ? 'border-red-300' : 
-                      isDueSoon ? 'border-orange-300' : 'border-gray-200';
+  const cardStyle = status === 'rejected' 
+    ? 'bg-red-500/10 border-red-500/50 ring-2 ring-red-500/30' 
+    : isOverdue 
+      ? 'bg-slate-800 border-red-500/50' 
+      : isDueSoon 
+        ? 'bg-slate-800 border-amber-500/50' 
+        : 'bg-slate-800 border-slate-700';
   
   return (
-    <div className={`bg-white rounded-xl border-2 overflow-hidden ${borderColor}`}>
+    <div className={`rounded-xl border-2 overflow-hidden shadow-lg ${cardStyle}`}>
       {/* Header - Always Visible */}
-      <div className="p-4 cursor-pointer hover:bg-gray-50" onClick={onToggle}>
+      <div className="p-4 cursor-pointer hover:bg-slate-700/50 transition-colors" onClick={onToggle}>
         <div className="flex items-start justify-between gap-3">
           <div className="flex-1 min-w-0">
             {/* Project Name - Main Title */}
-            <h3 className="font-semibold text-lg text-gray-900">{task.project?.name || 'Unknown Project'}</h3>
+            <h3 className="font-bold text-lg text-white">{task.project?.name || 'Unknown Project'}</h3>
             {/* Task Type - Subtitle */}
-            <p className="text-sm text-purple-600 font-medium">{getTaskType(task.text)}</p>
+            <p className="text-sm text-violet-400 font-semibold">{getTaskType(task.text)}</p>
             {/* Client - Clear Banner */}
             <div className="flex items-center gap-2 mt-2">
-              <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded-lg text-xs font-medium">
+              <span className="bg-blue-500/20 text-blue-300 px-2 py-1 rounded-lg text-xs font-semibold border border-blue-500/30">
                 🏢 {task.project?.client?.name || 'Unknown Client'}
               </span>
               {status === 'rejected' && (
-                <span className="bg-red-100 text-red-700 px-2 py-1 rounded-lg text-xs font-medium">
+                <span className="bg-red-500/30 text-red-300 px-2 py-1 rounded-lg text-xs font-semibold border border-red-500/50 animate-pulse">
                   ⚠️ Revision Needed
                 </span>
               )}
             </div>
           </div>
           <div className="text-right flex-shrink-0">
-            <p className={`font-medium ${isOverdue ? 'text-red-600' : isDueSoon ? 'text-orange-600' : 'text-gray-600'}`}>
+            <p className={`font-semibold ${isOverdue ? 'text-red-400' : isDueSoon ? 'text-amber-400' : 'text-slate-300'}`}>
               {formatDate(task.editor_due_date)}
             </p>
             <p className="text-xs mt-0.5">
               {isOverdue ? (
-                <span className="text-red-500 font-medium">{Math.abs(daysUntil)}d overdue</span>
+                <span className="text-red-400 font-bold">{Math.abs(daysUntil)}d overdue</span>
               ) : daysUntil === 0 ? (
-                <span className="text-orange-500 font-medium">Due today</span>
+                <span className="text-amber-400 font-bold">Due today</span>
               ) : daysUntil !== null ? (
-                <span className="text-gray-400">{daysUntil}d left</span>
+                <span className="text-slate-500">{daysUntil}d left</span>
               ) : null}
             </p>
           </div>
         </div>
-        <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100">
-          <span className="text-xs text-gray-400">{expanded ? '▲ Hide details' : '▼ Show details & upload'}</span>
+        <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-700">
+          <span className="text-xs text-slate-400 font-medium">{expanded ? '▲ Hide details' : '▼ Show details & upload'}</span>
         </div>
       </div>
       
       {/* Expanded Content */}
       {expanded && (
-        <div className="px-4 pb-4 border-t border-gray-100 bg-gray-50 space-y-4">
+        <div className="px-4 pb-4 border-t border-slate-700 bg-slate-900/50 space-y-4">
           
           {/* Rejection Notes */}
           {status === 'rejected' && task.rejection_notes && (
-            <div className="bg-red-100 border border-red-300 rounded-lg p-3 mt-3">
-              <p className="text-xs font-medium text-red-800 mb-1">📝 Revision Notes:</p>
-              <p className="text-sm text-red-700">{task.rejection_notes}</p>
+            <div className="bg-red-500/20 border border-red-500/50 rounded-lg p-4 mt-3">
+              <p className="text-xs font-bold text-red-400 mb-1 uppercase tracking-wide">📝 Revision Notes:</p>
+              <p className="text-sm text-red-200">{task.rejection_notes}</p>
             </div>
           )}
           
           {/* Editor Notes */}
           {task.editor_notes && (
             <div className="mt-3">
-              <p className="text-xs font-medium text-gray-500 uppercase mb-1">📝 Brief / Instructions</p>
-              <p className="text-sm text-gray-700 bg-white p-3 rounded-lg border">{task.editor_notes}</p>
+              <p className="text-xs font-bold text-slate-400 uppercase mb-2 tracking-wide">📝 Brief / Instructions</p>
+              <p className="text-sm text-slate-200 bg-slate-800 p-4 rounded-lg border border-slate-700">{task.editor_notes}</p>
             </div>
           )}
           
           {/* Raw Files - Better Download UI */}
           {task.raw_files && task.raw_files.length > 0 && (
             <div>
-              <p className="text-xs font-medium text-gray-500 uppercase mb-2">📥 RAW FILES TO DOWNLOAD</p>
+              <p className="text-xs font-bold text-slate-400 uppercase mb-2 tracking-wide">📥 RAW FILES TO DOWNLOAD</p>
               <div className="space-y-2">
                 {task.raw_files.map((file, i) => (
                   <a 
@@ -991,14 +1017,14 @@ function TaskCard({ task, expanded, onToggle, onUpload, uploading, clientAssets,
                     href={file.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center gap-3 p-3 bg-blue-50 border-2 border-blue-200 rounded-lg hover:bg-blue-100 hover:border-blue-400 transition-all group"
+                    className="flex items-center gap-3 p-4 bg-blue-500/20 border-2 border-blue-500/40 rounded-lg hover:bg-blue-500/30 hover:border-blue-400 transition-all group"
                   >
                     <span className="text-2xl">📁</span>
                     <div className="flex-1 min-w-0">
-                      <p className="font-medium text-blue-900 truncate">{file.name}</p>
-                      <p className="text-xs text-blue-600">Click to download</p>
+                      <p className="font-semibold text-blue-200 truncate">{file.name}</p>
+                      <p className="text-xs text-blue-400">Click to download</p>
                     </div>
-                    <span className="text-blue-600 text-xl group-hover:translate-x-1 transition-transform">↓</span>
+                    <span className="text-blue-400 text-2xl group-hover:translate-y-1 transition-transform">↓</span>
                   </a>
                 ))}
               </div>
@@ -1008,7 +1034,7 @@ function TaskCard({ task, expanded, onToggle, onUpload, uploading, clientAssets,
           {/* Client Assets */}
           {clientAssets.length > 0 && (
             <div>
-              <p className="text-xs font-medium text-gray-500 uppercase mb-2">🎨 CLIENT BRAND ASSETS</p>
+              <p className="text-xs font-bold text-slate-400 uppercase mb-2 tracking-wide">🎨 CLIENT BRAND ASSETS</p>
               <div className="grid grid-cols-2 gap-2">
                 {clientAssets.map((asset, i) => (
                   <a 
@@ -1016,11 +1042,11 @@ function TaskCard({ task, expanded, onToggle, onUpload, uploading, clientAssets,
                     href={asset.file_url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center gap-2 p-2 bg-purple-50 border border-purple-200 rounded-lg hover:bg-purple-100 text-sm"
+                    className="flex items-center gap-2 p-3 bg-violet-500/20 border border-violet-500/30 rounded-lg hover:bg-violet-500/30 text-sm transition-colors"
                   >
                     <span>{asset.type === 'image' ? '🖼️' : asset.type === 'font' ? '🔤' : asset.type === 'video' ? '🎬' : '📄'}</span>
-                    <span className="truncate flex-1 text-purple-900">{asset.name}</span>
-                    <span className="text-purple-400">↓</span>
+                    <span className="truncate flex-1 text-violet-200 font-medium">{asset.name}</span>
+                    <span className="text-violet-400">↓</span>
                   </a>
                 ))}
               </div>
@@ -1028,8 +1054,8 @@ function TaskCard({ task, expanded, onToggle, onUpload, uploading, clientAssets,
           )}
           
           {/* Upload Final File */}
-          <div className="pt-3 border-t border-gray-200">
-            <p className="text-xs font-medium text-gray-500 uppercase mb-2">📤 UPLOAD FINAL FILE</p>
+          <div className="pt-4 border-t border-slate-700">
+            <p className="text-xs font-bold text-slate-400 uppercase mb-3 tracking-wide">📤 UPLOAD FINAL FILE</p>
             <input 
               type="file" 
               ref={fileInputRef}
@@ -1041,11 +1067,11 @@ function TaskCard({ task, expanded, onToggle, onUpload, uploading, clientAssets,
               }}
             />
             {task.file_url ? (
-              <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-                <p className="text-sm text-green-700">✅ Uploaded: {task.file_name}</p>
+              <div className="bg-emerald-500/20 border border-emerald-500/40 rounded-lg p-4">
+                <p className="text-sm text-emerald-300 font-medium">✅ Uploaded: {task.file_name}</p>
                 <button 
                   onClick={() => fileInputRef.current?.click()}
-                  className="text-xs text-green-600 underline mt-1"
+                  className="text-xs text-emerald-400 underline mt-2 hover:text-emerald-300"
                   disabled={uploading}
                 >
                   Replace file
@@ -1053,26 +1079,26 @@ function TaskCard({ task, expanded, onToggle, onUpload, uploading, clientAssets,
               </div>
             ) : (
               <div 
-                className="border-2 border-dashed border-green-300 rounded-xl p-6 text-center cursor-pointer hover:bg-green-50 hover:border-green-500 transition-colors"
-                onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('border-green-500', 'bg-green-100'); }}
-                onDragLeave={e => { e.preventDefault(); e.currentTarget.classList.remove('border-green-500', 'bg-green-100'); }}
+                className="border-2 border-dashed border-emerald-500/50 rounded-xl p-8 text-center cursor-pointer hover:bg-emerald-500/10 hover:border-emerald-400 transition-all"
+                onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('border-emerald-400', 'bg-emerald-500/20'); }}
+                onDragLeave={e => { e.preventDefault(); e.currentTarget.classList.remove('border-emerald-400', 'bg-emerald-500/20'); }}
                 onDrop={e => { 
                   e.preventDefault(); 
-                  e.currentTarget.classList.remove('border-green-500', 'bg-green-100');
+                  e.currentTarget.classList.remove('border-emerald-400', 'bg-emerald-500/20');
                   if (e.dataTransfer.files?.[0]) onUpload(e.dataTransfer.files[0]);
                 }}
                 onClick={() => !uploading && fileInputRef.current?.click()}
               >
                 {uploading ? (
-                  <div className="text-green-600">
-                    <p className="text-2xl mb-2">⏳</p>
-                    <p className="font-medium">Uploading...</p>
+                  <div className="text-emerald-400">
+                    <p className="text-3xl mb-2 animate-bounce">⏳</p>
+                    <p className="font-semibold">Uploading...</p>
                   </div>
                 ) : (
                   <>
-                    <p className="text-3xl mb-2">📤</p>
-                    <p className="font-medium text-green-700">Drop your final file here</p>
-                    <p className="text-sm text-green-600 mt-1">or click to browse</p>
+                    <p className="text-4xl mb-3">📤</p>
+                    <p className="font-semibold text-emerald-300 text-lg">Drop your final file here</p>
+                    <p className="text-sm text-emerald-400/70 mt-1">or click to browse</p>
                   </>
                 )}
               </div>
@@ -1692,43 +1718,27 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                                       )}
                                       
                                       {isAwaiting && !t.file_url && (
-                                        <>
-                                          {/* Upload box for admin to upload on behalf of editor */}
-                                          <div 
-                                            className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center cursor-pointer hover:bg-gray-50 hover:border-gray-400 transition-colors"
-                                            onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('border-blue-400', 'bg-blue-50'); }}
-                                            onDragLeave={e => { e.preventDefault(); e.currentTarget.classList.remove('border-blue-400', 'bg-blue-50'); }}
-                                            onDrop={e => { 
-                                              e.preventDefault(); 
-                                              e.currentTarget.classList.remove('border-blue-400', 'bg-blue-50');
-                                              if (e.dataTransfer.files?.[0]) {
-                                                // Upload and mark as pending review
-                                                handleFileUpload(project.id, t.id, e.dataTransfer.files);
-                                              }
-                                            }}
-                                            onClick={() => document.getElementById(`editor-file-${t.id}`).click()}
-                                          >
-                                            <p className="text-gray-500 text-sm">📁 Drop file or click</p>
-                                            <p className="text-gray-400 text-xs mt-1">Upload on behalf of editor</p>
-                                            <input 
-                                              id={`editor-file-${t.id}`} 
-                                              type="file" 
-                                              className="hidden" 
-                                              onChange={e => e.target.files?.length && handleFileUpload(project.id, t.id, e.target.files)} 
-                                            />
-                                          </div>
-                                          <div className="flex items-center justify-between mt-2">
-                                            {!t.editor_id && (
-                                              <button onClick={() => setModal({ type: 'assignEditor', task: t, project, client })} className="text-xs text-blue-600 hover:text-blue-800">
+                                        <div className="space-y-2">
+                                          {/* Raw files indicator */}
+                                          {t.raw_files && t.raw_files.length > 0 && (
+                                            <p className="text-xs text-gray-500">📁 {t.raw_files.length} raw file{t.raw_files.length > 1 ? 's' : ''} attached</p>
+                                          )}
+                                          
+                                          {/* Actions */}
+                                          <div className="flex items-center justify-between">
+                                            {!t.editor_id ? (
+                                              <button onClick={() => setModal({ type: 'assignEditor', task: t, project, client })} className="text-sm font-medium text-blue-600 hover:text-blue-800">
                                                 + Assign Editor
                                               </button>
+                                            ) : (
+                                              <span className="text-xs text-gray-400">Waiting for editor</span>
                                             )}
-                                            <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer ml-auto">
+                                            <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer">
                                               <input type="checkbox" checked={t.editor_bypass || false} onChange={(e) => handleEditorBypass(project.id, t.id, e.target.checked)} className="w-3 h-3" />
                                               Bypass
                                             </label>
                                           </div>
-                                        </>
+                                        </div>
                                       )}
                                       
                                       {isRejected && (
@@ -2002,8 +2012,8 @@ function ClientAssetsModal({ client, onClose }) {
         else if (['mp4', 'mov', 'avi', 'webm'].includes(ext)) assetType = 'video';
         else if (['pdf'].includes(ext)) assetType = 'pdf';
         
-        // Upload to Bunny
-        const result = await db.uploadFile(client.id, file, () => {}, () => {});
+        // Upload to Bunny using asset upload function
+        const result = await db.uploadAsset(client.id, file);
         
         // Create asset record
         await db.createAsset({
@@ -2015,7 +2025,7 @@ function ClientAssetsModal({ client, onClose }) {
         });
       } catch (e) {
         console.error('Failed to upload asset:', e);
-        alert(`Failed to upload ${file.name}`);
+        alert(`Failed to upload ${file.name}: ${e.message}`);
       }
     }
     setUploading(false);
