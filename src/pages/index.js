@@ -617,7 +617,7 @@ export default function App() {
             addToQueue={addToQueue}
           />
         ) : portal === 'editor' ? (
-          <EditorPortal />
+          <EditorPortalDebug editors={editors} />
         ) : (
           <Placeholder type={portal} />
         )}
@@ -639,15 +639,45 @@ function Placeholder({ type }) {
   return <div className="h-full flex items-center justify-center bg-gray-50"><div className="text-center text-gray-400"><p className="text-6xl mb-4">{cfg?.icon || '📋'}</p><p className="text-xl font-medium capitalize">{type} Portal</p><p className="text-sm mt-2">Coming soon</p></div></div>;
 }
 
-// Editor Portal (for admin view - requires login via main login screen now)
-function EditorPortal() {
-  return <div className="h-full flex items-center justify-center bg-gray-50">
-    <div className="text-center text-gray-500">
-      <p className="text-5xl mb-4">🎬</p>
-      <p className="text-lg">Editor Portal</p>
-      <p className="text-sm mt-2">Log in as an editor from the main login screen</p>
+// Editor Portal Debug (for admin view - select an editor to preview their dashboard)
+function EditorPortalDebug({ editors }) {
+  const [selectedEditorId, setSelectedEditorId] = useState('');
+  const selectedEditor = editors.find(e => e.id === selectedEditorId);
+  
+  if (!selectedEditorId) {
+    return (
+      <div className="h-full flex items-center justify-center bg-gradient-to-br from-blue-50 to-purple-50">
+        <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md text-center">
+          <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <span className="text-3xl">🎬</span>
+          </div>
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">Editor Portal Preview</h1>
+          <p className="text-gray-500 mb-6">Select an editor to preview their dashboard</p>
+          <select 
+            value={selectedEditorId} 
+            onChange={e => setSelectedEditorId(e.target.value)}
+            className="w-full border rounded-lg px-4 py-3 text-lg"
+          >
+            <option value="">Select editor...</option>
+            {editors.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+          </select>
+          <p className="text-xs text-gray-400 mt-4">⚠️ Debug mode - remove before production</p>
+        </div>
+      </div>
+    );
+  }
+  
+  return (
+    <div className="h-full flex flex-col">
+      <div className="bg-yellow-100 border-b border-yellow-300 px-4 py-2 flex items-center justify-between">
+        <span className="text-sm text-yellow-800">🔧 Viewing as: <strong>{selectedEditor?.name}</strong></span>
+        <button onClick={() => setSelectedEditorId('')} className="text-yellow-700 hover:text-yellow-900 text-sm">← Back</button>
+      </div>
+      <div className="flex-1 overflow-hidden">
+        <EditorPortalDashboard editorId={selectedEditorId} editorName={selectedEditor?.name} />
+      </div>
     </div>
-  </div>;
+  );
 }
 
 // Editor Dashboard (when logged in as editor)
@@ -1704,8 +1734,8 @@ function AddProjectModal({ clients, services, editors, onClose, onCreate }) {
             </div>
           </div>
           
-          {/* Editor Assignment Section - only show if there are editor tasks */}
-          {editorTasks.length > 0 && (
+          {/* Editor Assignment Section - always show */}
+          {editors.length > 0 && (
             <div className="border-t pt-4">
               <h3 className="text-sm font-semibold text-gray-700 mb-3">🎬 Editor Assignment (Optional)</h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1739,8 +1769,11 @@ function AddProjectModal({ clients, services, editors, onClose, onCreate }) {
                   />
                 </div>
               )}
-              {form.editor_id && (
+              {form.editor_id && editorTasks.length > 0 && (
                 <p className="text-xs text-blue-600 mt-2">ℹ️ {editorTasks.length} editor task{editorTasks.length > 1 ? 's' : ''} will be assigned to {editors.find(e => e.id === form.editor_id)?.name}</p>
+              )}
+              {form.editor_id && editorTasks.length === 0 && (
+                <p className="text-xs text-gray-500 mt-2">ℹ️ No editor tasks in selected services. Editor will be saved for future tasks.</p>
               )}
             </div>
           )}
@@ -1769,39 +1802,10 @@ function EditProjectModal({ project, clients, services, onClose, onSave, onAddTa
     client_id: project.client_id,
     services: project.services || []
   });
-  const [tasks, setTasks] = useState(project.tasks || []);
-  const [newTaskText, setNewTaskText] = useState('');
-  const [confirmDelete, setConfirmDelete] = useState(null);
   const [saving, setSaving] = useState(false);
   
-  const handleAddTask = async () => {
-    if (!newTaskText.trim()) return;
-    setSaving(true);
-    try {
-      await onAddTask({ 
-        text: newTaskText, 
-        is_editor_task: newTaskText.toLowerCase().includes('editor'),
-        is_client_task: newTaskText.toLowerCase().includes('client')
-      });
-      setNewTaskText('');
-      // Refresh will happen from parent
-    } catch (e) {
-      alert('Failed to add task');
-    }
-    setSaving(false);
-  };
-  
-  const handleDeleteTask = async (taskId) => {
-    setSaving(true);
-    try {
-      await onDeleteTask(taskId);
-      setTasks(prev => prev.filter(t => t.id !== taskId));
-      setConfirmDelete(null);
-    } catch (e) {
-      alert('Failed to delete task');
-    }
-    setSaving(false);
-  };
+  // Get current tasks grouped by whether they're from services
+  const tasks = project.tasks || [];
   
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -1839,42 +1843,21 @@ function EditProjectModal({ project, clients, services, onClose, onSave, onAddTa
             </div>
           </div>
           
-          {/* Tasks Section */}
+          {/* Tasks Preview - read only */}
           <div className="border-t pt-4">
-            <label className="block text-sm font-medium mb-2">📋 Tasks ({tasks.length})</label>
-            <div className="space-y-2 max-h-48 overflow-auto">
+            <label className="block text-sm font-medium mb-2">📋 Current Tasks ({tasks.length})</label>
+            <div className="space-y-1 max-h-40 overflow-auto">
               {tasks.map(t => (
-                <div key={t.id} className={`flex items-center justify-between p-2 rounded-lg border ${t.completed ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'}`}>
-                  <div className="flex-1 min-w-0">
-                    <p className={`text-sm truncate ${t.completed ? 'line-through text-gray-400' : ''}`}>{t.text}</p>
-                    <div className="flex gap-1 mt-1">
-                      {t.is_editor_task && <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">Editor</span>}
-                      {t.is_client_task && <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Client</span>}
-                    </div>
-                  </div>
-                  {confirmDelete === t.id ? (
-                    <div className="flex items-center gap-1 ml-2">
-                      <button onClick={() => handleDeleteTask(t.id)} disabled={saving} className="text-xs bg-red-600 text-white px-2 py-1 rounded">Delete</button>
-                      <button onClick={() => setConfirmDelete(null)} className="text-xs border px-2 py-1 rounded">Cancel</button>
-                    </div>
-                  ) : (
-                    <button onClick={() => setConfirmDelete(t.id)} className="text-red-400 hover:text-red-600 text-sm ml-2">🗑️</button>
-                  )}
+                <div key={t.id} className={`flex items-center gap-2 p-2 rounded-lg text-sm ${t.completed ? 'bg-green-50 text-gray-400 line-through' : 'bg-gray-50'}`}>
+                  <span className={t.completed ? 'text-green-500' : 'text-gray-400'}>{t.completed ? '✓' : '○'}</span>
+                  <span className="truncate flex-1">{t.text}</span>
+                  {t.is_editor_task && <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">Editor</span>}
+                  {t.is_client_task && <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Client</span>}
                 </div>
               ))}
+              {tasks.length === 0 && <p className="text-gray-400 text-sm italic">No tasks</p>}
             </div>
-            
-            {/* Add new task */}
-            <div className="flex gap-2 mt-3">
-              <input 
-                value={newTaskText} 
-                onChange={e => setNewTaskText(e.target.value)} 
-                placeholder="Add new task..."
-                className="flex-1 border rounded-lg px-3 py-2 text-sm"
-                onKeyDown={e => e.key === 'Enter' && handleAddTask()}
-              />
-              <button onClick={handleAddTask} disabled={saving || !newTaskText.trim()} className="bg-blue-600 text-white px-3 py-2 rounded-lg text-sm disabled:opacity-50">+ Add</button>
-            </div>
+            <p className="text-xs text-gray-400 mt-2">Tasks are managed through revisions and the Assign Editor feature</p>
           </div>
           
           <button onClick={() => onSave(form)} className="w-full bg-purple-600 text-white py-3 rounded-lg font-medium">Save Project</button>
