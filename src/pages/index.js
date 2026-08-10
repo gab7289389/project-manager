@@ -1052,17 +1052,30 @@ function TaskCard({ task, expanded, onToggle, onUpload, uploading, clientAssets,
                 </button>
               </div>
             ) : (
-              <button 
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploading}
-                className="w-full bg-green-600 text-white py-3 rounded-lg font-medium hover:bg-green-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              <div 
+                className="border-2 border-dashed border-green-300 rounded-xl p-6 text-center cursor-pointer hover:bg-green-50 hover:border-green-500 transition-colors"
+                onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('border-green-500', 'bg-green-100'); }}
+                onDragLeave={e => { e.preventDefault(); e.currentTarget.classList.remove('border-green-500', 'bg-green-100'); }}
+                onDrop={e => { 
+                  e.preventDefault(); 
+                  e.currentTarget.classList.remove('border-green-500', 'bg-green-100');
+                  if (e.dataTransfer.files?.[0]) onUpload(e.dataTransfer.files[0]);
+                }}
+                onClick={() => !uploading && fileInputRef.current?.click()}
               >
                 {uploading ? (
-                  <>⏳ Uploading...</>
+                  <div className="text-green-600">
+                    <p className="text-2xl mb-2">⏳</p>
+                    <p className="font-medium">Uploading...</p>
+                  </div>
                 ) : (
-                  <>📤 Upload Completed Work</>
+                  <>
+                    <p className="text-3xl mb-2">📤</p>
+                    <p className="font-medium text-green-700">Drop your final file here</p>
+                    <p className="text-sm text-green-600 mt-1">or click to browse</p>
+                  </>
                 )}
-              </button>
+              </div>
             )}
           </div>
         </div>
@@ -1202,15 +1215,38 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
     }
   };
 
-  // Approve editor submission
+  // Approve editor submission - copies file to corresponding client task
   const handleApproveTask = async (projectId, taskId) => {
+    const project = projects.find(p => p.id === projectId);
+    const editorTask = project?.tasks?.find(t => t.id === taskId);
+    
+    // Find the corresponding client task (same type, e.g., "Submit Listing Video to editor" → "Submit Listing Video to client")
+    const taskType = editorTask?.text?.replace('Submit ', '').replace(' to editor', '');
+    const clientTask = project?.tasks?.find(t => 
+      t.is_client_task && 
+      t.text?.includes(taskType)
+    );
+    
     setProjects(prev => prev.map(p => p.id !== projectId ? p : {
       ...p,
-      tasks: p.tasks.map(t => t.id === taskId ? { ...t, completed: true, status: 'approved', approved_at: new Date().toISOString() } : t)
+      tasks: p.tasks.map(t => {
+        if (t.id === taskId) {
+          return { ...t, completed: true, status: 'approved', approved_at: new Date().toISOString() };
+        }
+        // Copy file to client task
+        if (clientTask && t.id === clientTask.id && editorTask?.file_url) {
+          return { ...t, file_url: editorTask.file_url, file_name: editorTask.file_name };
+        }
+        return t;
+      })
     }));
     
     try {
       await db.updateTask(taskId, { completed: true, status: 'approved', approved_at: new Date().toISOString() });
+      // Also update client task with the file
+      if (clientTask && editorTask?.file_url) {
+        await db.updateTask(clientTask.id, { file_url: editorTask.file_url, file_name: editorTask.file_name });
+      }
     } catch (e) {
       console.error(e);
       await refreshData();
@@ -1572,126 +1608,140 @@ function AdminPortal({ clients, setClients, services, setServices, editors, setE
                           </div>
                         </div>
                         <div className="p-5 sm:p-6 border-t border-gray-200 bg-gray-50">
+                          <h4 className="font-medium text-sm mb-4 text-gray-900">🎬 Editor Workflow</h4>
                           {/* Group editor tasks by status */}
                           {(() => {
                             const pendingReview = editorTasks.filter(t => (t.status === 'pending_review' || t.editor_submitted_at) && !t.completed && t.status !== 'rejected');
                             const rejected = editorTasks.filter(t => t.status === 'rejected');
-                            const inProgress = editorTasks.filter(t => !t.completed && !t.editor_submitted_at && t.status !== 'pending_review' && t.status !== 'rejected');
+                            const awaitingUpload = editorTasks.filter(t => !t.completed && !t.editor_submitted_at && t.status !== 'pending_review' && t.status !== 'rejected' && !t.file_url);
                             const completed = editorTasks.filter(t => t.completed);
                             
                             return (
-                              <>
-                                {/* Pending Review - Needs Action */}
-                                {pendingReview.length > 0 && (
-                                  <div className="mb-6">
-                                    <h4 className="font-medium text-sm mb-3 text-yellow-700 flex items-center gap-2">
-                                      ⏳ Pending Your Review ({pendingReview.length})
-                                    </h4>
-                                    <div className="space-y-3">
-                                      {pendingReview.map(t => (
-                                        <div key={t.id} className="p-4 bg-yellow-50 border-2 border-yellow-300 rounded-xl">
-                                          <div className="flex items-start justify-between gap-3 mb-3">
-                                            <div>
-                                              <span className="font-medium text-gray-900">{t.text.replace('Submit ', '').replace(' to editor', '')}</span>
-                                              <p className="text-xs text-gray-500 mt-1">Submitted by: {editors.find(e => e.id === t.editor_id)?.name || 'Editor'}</p>
-                                            </div>
-                                            <span className="text-xs bg-yellow-200 text-yellow-800 px-2 py-1 rounded-full">Needs Review</span>
+                              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                {editorTasks.map(t => {
+                                  const label = t.text.replace('Submit ', '').replace(' to editor', '');
+                                  const isPendingReview = (t.status === 'pending_review' || t.editor_submitted_at) && !t.completed && t.status !== 'rejected';
+                                  const isRejected = t.status === 'rejected';
+                                  const isCompleted = t.completed;
+                                  const isAwaiting = !isCompleted && !isPendingReview && !isRejected;
+                                  
+                                  return (
+                                    <div 
+                                      key={t.id} 
+                                      className={`p-4 rounded-xl border-2 ${
+                                        isPendingReview ? 'bg-yellow-50 border-yellow-300' :
+                                        isRejected ? 'bg-red-50 border-red-300' :
+                                        isCompleted ? 'bg-green-50 border-green-200' :
+                                        'bg-white border-gray-200'
+                                      }`}
+                                    >
+                                      {/* Header */}
+                                      <div className="flex items-start justify-between gap-2 mb-3">
+                                        <div>
+                                          <span className="font-medium text-gray-900">{label}</span>
+                                          {t.editor_id && <p className="text-xs text-purple-600 mt-0.5">Assigned: {editors.find(e => e.id === t.editor_id)?.name}</p>}
+                                        </div>
+                                        <span className={`text-xs px-2 py-1 rounded-full font-medium ${
+                                          isPendingReview ? 'bg-yellow-200 text-yellow-800' :
+                                          isRejected ? 'bg-red-200 text-red-800' :
+                                          isCompleted ? 'bg-green-200 text-green-800' :
+                                          t.editor_id ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'
+                                        }`}>
+                                          {isPendingReview ? '⏳ Review' :
+                                           isRejected ? '⚠️ Revision' :
+                                           isCompleted ? '✓ Approved' :
+                                           t.editor_id ? '🎬 In Progress' : 'Unassigned'}
+                                        </span>
+                                      </div>
+                                      
+                                      {/* Rejection notes */}
+                                      {isRejected && t.rejection_notes && (
+                                        <div className="text-xs text-red-700 bg-red-100 p-2 rounded mb-3">
+                                          📝 {t.rejection_notes}
+                                        </div>
+                                      )}
+                                      
+                                      {/* Content based on status */}
+                                      {isPendingReview && t.file_url && (
+                                        <>
+                                          <div className="bg-white rounded-lg p-3 mb-3 border">
+                                            <p className="text-sm mb-2">📎 {t.file_name}</p>
+                                            <a href={t.file_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 bg-blue-600 text-white px-3 py-1.5 rounded text-xs hover:bg-blue-700">
+                                              👁️ Preview / Download
+                                            </a>
                                           </div>
-                                          {t.file_url && (
-                                            <div className="bg-white rounded-lg p-3 mb-3 border border-yellow-200">
-                                              <p className="text-sm font-medium mb-2">📎 {t.file_name}</p>
-                                              <a href={t.file_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700">
-                                                👁️ Preview / Download
-                                              </a>
-                                            </div>
-                                          )}
                                           <div className="flex gap-2">
-                                            <button 
-                                              onClick={() => handleApproveTask(project.id, t.id)}
-                                              className="flex-1 bg-green-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-green-700"
-                                            >
+                                            <button onClick={() => handleApproveTask(project.id, t.id)} className="flex-1 bg-green-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-green-700">
                                               ✓ Approve
                                             </button>
-                                            <button 
-                                              onClick={() => {
-                                                const notes = prompt('Reason for rejection (will be shown to editor):');
-                                                if (notes !== null) handleRejectTask(project.id, t.id, notes);
-                                              }}
-                                              className="flex-1 bg-red-100 text-red-700 py-2 rounded-lg text-sm font-medium hover:bg-red-200"
-                                            >
-                                              ✗ Request Revision
+                                            <button onClick={() => {
+                                              const notes = prompt('Revision notes for editor:');
+                                              if (notes !== null) handleRejectTask(project.id, t.id, notes);
+                                            }} className="flex-1 bg-red-100 text-red-700 py-2 rounded-lg text-sm font-medium hover:bg-red-200">
+                                              ✗ Revise
                                             </button>
                                           </div>
+                                        </>
+                                      )}
+                                      
+                                      {isCompleted && t.file_url && (
+                                        <div className="flex items-center gap-2 text-sm text-gray-600">
+                                          <span>📎 {t.file_name}</span>
+                                          <a href={t.file_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:text-blue-800">↓</a>
                                         </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                )}
-                                
-                                {/* Rejected - Sent back to editor */}
-                                {rejected.length > 0 && (
-                                  <div className="mb-6">
-                                    <h4 className="font-medium text-sm mb-3 text-red-700 flex items-center gap-2">
-                                      ⚠️ Revision Requested ({rejected.length})
-                                    </h4>
-                                    <div className="space-y-2">
-                                      {rejected.map(t => (
-                                        <div key={t.id} className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-center justify-between">
-                                          <div>
-                                            <span className="text-gray-700">{t.text.replace('Submit ', '').replace(' to editor', '')}</span>
-                                            <p className="text-xs text-red-600 mt-1">Sent back: {t.rejection_notes || 'Revision needed'}</p>
+                                      )}
+                                      
+                                      {isAwaiting && !t.file_url && (
+                                        <>
+                                          {/* Upload box for admin to upload on behalf of editor */}
+                                          <div 
+                                            className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center cursor-pointer hover:bg-gray-50 hover:border-gray-400 transition-colors"
+                                            onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('border-blue-400', 'bg-blue-50'); }}
+                                            onDragLeave={e => { e.preventDefault(); e.currentTarget.classList.remove('border-blue-400', 'bg-blue-50'); }}
+                                            onDrop={e => { 
+                                              e.preventDefault(); 
+                                              e.currentTarget.classList.remove('border-blue-400', 'bg-blue-50');
+                                              if (e.dataTransfer.files?.[0]) {
+                                                // Upload and mark as pending review
+                                                handleFileUpload(project.id, t.id, e.dataTransfer.files);
+                                              }
+                                            }}
+                                            onClick={() => document.getElementById(`editor-file-${t.id}`).click()}
+                                          >
+                                            <p className="text-gray-500 text-sm">📁 Drop file or click</p>
+                                            <p className="text-gray-400 text-xs mt-1">Upload on behalf of editor</p>
+                                            <input 
+                                              id={`editor-file-${t.id}`} 
+                                              type="file" 
+                                              className="hidden" 
+                                              onChange={e => e.target.files?.length && handleFileUpload(project.id, t.id, e.target.files)} 
+                                            />
                                           </div>
-                                          <span className="text-xs text-red-600">Waiting for editor</span>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                )}
-                                
-                                {/* In Progress */}
-                                {inProgress.length > 0 && (
-                                  <div className="mb-6">
-                                    <h4 className="font-medium text-sm mb-3 text-gray-700">🎬 In Progress ({inProgress.length})</h4>
-                                    <div className="space-y-2">
-                                      {inProgress.map(t => (
-                                        <div key={t.id} className="flex items-center gap-3 p-3 bg-white rounded-xl border border-gray-200 group">
-                                          <input type="checkbox" checked={t.completed || t.editor_bypass} onChange={() => toggleTask(project.id, t.id, t.completed)} className="w-4 h-4 rounded" disabled={t.editor_bypass} />
-                                          <span className={`flex-1 ${t.editor_bypass ? 'line-through text-gray-400' : 'text-gray-700'}`}>{t.text.replace('Submit ', '').replace(' to editor', '')}</span>
-                                          <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                            <label className="flex items-center gap-1 text-xs text-gray-500 cursor-pointer" title="Manual bypass">
+                                          <div className="flex items-center justify-between mt-2">
+                                            {!t.editor_id && (
+                                              <button onClick={() => setModal({ type: 'assignEditor', task: t, project, client })} className="text-xs text-blue-600 hover:text-blue-800">
+                                                + Assign Editor
+                                              </button>
+                                            )}
+                                            <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer ml-auto">
                                               <input type="checkbox" checked={t.editor_bypass || false} onChange={(e) => handleEditorBypass(project.id, t.id, e.target.checked)} className="w-3 h-3" />
                                               Bypass
                                             </label>
-                                            <button onClick={() => setModal({ type: 'assignEditor', task: t, project, client })} className="text-xs text-blue-500 hover:text-blue-700 px-2">Assign</button>
                                           </div>
-                                          {t.editor_id && <span className="text-xs text-purple-600 bg-purple-50 px-2 py-0.5 rounded">{editors.find(e => e.id === t.editor_id)?.name}</span>}
-                                          {!t.editor_id && <span className="text-xs text-gray-400">Unassigned</span>}
-                                        </div>
-                                      ))}
+                                        </>
+                                      )}
+                                      
+                                      {isRejected && (
+                                        <p className="text-xs text-red-600 italic">Waiting for editor to resubmit</p>
+                                      )}
                                     </div>
-                                  </div>
-                                )}
-                                
-                                {/* Completed */}
-                                {completed.length > 0 && (
-                                  <div>
-                                    <h4 className="font-medium text-sm mb-3 text-green-700">✓ Approved ({completed.length})</h4>
-                                    <div className="space-y-2">
-                                      {completed.map(t => (
-                                        <div key={t.id} className="flex items-center gap-3 p-3 bg-green-50 rounded-xl border border-green-200">
-                                          <span className="text-green-500">✓</span>
-                                          <span className="text-gray-500 line-through flex-1">{t.text.replace('Submit ', '').replace(' to editor', '')}</span>
-                                          {t.file_url && <a href={t.file_url} target="_blank" rel="noopener noreferrer" className="text-xs text-gray-500 hover:text-black">📥 Download</a>}
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                )}
+                                  );
+                                })}
                                 
                                 {editorTasks.length === 0 && (
-                                  <p className="text-gray-400 text-sm italic">No editor tasks for this project</p>
+                                  <p className="text-gray-400 text-sm italic col-span-2">No editor tasks for this project</p>
                                 )}
-                              </>
+                              </div>
                             );
                           })()}
                         </div>
@@ -2217,34 +2267,20 @@ function AddProjectModal({ clients, services, editors, onClose, onCreate }) {
     name: '', 
     client_id: '', 
     due_date: '', 
-    selectedServices: [],
-    editor_id: '',
-    editor_due_date: '',
-    editor_notes: ''
+    selectedServices: []
   });
   const hasSitePlan = form.selectedServices.some(sn => services.find(s => s.name === sn)?.tasks.some(t => t.toLowerCase().includes('site plan')));
   const previewTasks = form.selectedServices.flatMap(sn => services.find(s => s.name === sn)?.tasks || []);
   const filteredTasks = hasSitePlan ? previewTasks.filter(t => !(t.toLowerCase().includes('floor plan') && t.toLowerCase().includes('client'))) : previewTasks;
-  const editorTasks = filteredTasks.filter(t => t.toLowerCase().includes('editor'));
   
   const create = () => {
     if (!form.name || !form.client_id || !form.due_date || !form.selectedServices.length) { alert('Fill all fields'); return; }
     const serviceTypes = [...new Set(filteredTasks.map(t => { const m = t.match(/Submit (.+?) to (editor|client)/i); return m ? m[1] : null; }).filter(Boolean))];
-    const tasks = filteredTasks.map(tt => {
-      const isEditorTask = tt.toLowerCase().includes('editor');
-      return { 
-        text: tt, 
-        is_editor_task: isEditorTask, 
-        is_client_task: tt.toLowerCase().includes('client'),
-        // Add editor info to editor tasks if editor is selected
-        ...(isEditorTask && form.editor_id ? {
-          editor_id: form.editor_id,
-          editor_due_date: form.editor_due_date || form.due_date,
-          editor_notes: form.editor_notes,
-          assigned_at: new Date().toISOString()
-        } : {})
-      };
-    });
+    const tasks = filteredTasks.map(tt => ({ 
+      text: tt, 
+      is_editor_task: tt.toLowerCase().includes('editor'), 
+      is_client_task: tt.toLowerCase().includes('client')
+    }));
     onCreate({ name: form.name, client_id: form.client_id, due_date: form.due_date, services: form.selectedServices, service_types: serviceTypes }, tasks);
   };
   
@@ -2287,50 +2323,6 @@ function AddProjectModal({ clients, services, editors, onClose, onCreate }) {
             </div>
           </div>
           
-          {/* Editor Assignment Section - always show */}
-          {editors.length > 0 && (
-            <div className="border-t pt-4">
-              <h3 className="text-sm font-semibold text-gray-700 mb-3">🎬 Editor Assignment (Optional)</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium mb-1">Assign to Editor</label>
-                  <select value={form.editor_id} onChange={e => setForm({ ...form, editor_id: e.target.value })} className="w-full border rounded-lg px-3 py-2">
-                    <option value="">Select editor (optional)...</option>
-                    {editors.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Editor Due Date</label>
-                  <input 
-                    type="date" 
-                    value={form.editor_due_date} 
-                    onChange={e => setForm({ ...form, editor_due_date: e.target.value })} 
-                    className="w-full border rounded-lg px-3 py-2" 
-                    disabled={!form.editor_id}
-                  />
-                </div>
-              </div>
-              {form.editor_id && (
-                <div className="mt-3">
-                  <label className="block text-sm font-medium mb-1">Notes for Editor</label>
-                  <textarea 
-                    value={form.editor_notes} 
-                    onChange={e => setForm({ ...form, editor_notes: e.target.value })} 
-                    className="w-full border rounded-lg px-3 py-2" 
-                    rows={2}
-                    placeholder="Any special instructions..."
-                  />
-                </div>
-              )}
-              {form.editor_id && editorTasks.length > 0 && (
-                <p className="text-xs text-blue-600 mt-2">ℹ️ {editorTasks.length} editor task{editorTasks.length > 1 ? 's' : ''} will be assigned to {editors.find(e => e.id === form.editor_id)?.name}</p>
-              )}
-              {form.editor_id && editorTasks.length === 0 && (
-                <p className="text-xs text-gray-500 mt-2">ℹ️ No editor tasks in selected services. Editor will be saved for future tasks.</p>
-              )}
-            </div>
-          )}
-          
           {filteredTasks.length > 0 && (
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
               <p className="text-sm font-medium text-blue-800 mb-2">📋 This will create:</p>
@@ -2338,6 +2330,7 @@ function AddProjectModal({ clients, services, editors, onClose, onCreate }) {
                 {filteredTasks.map((t, i) => <li key={i}>• {t}</li>)}
               </ul>
               {hasSitePlan && <p className="text-xs text-orange-600 mt-2">ℹ️ Floor Plan client upload removed (Site Plan replaces it)</p>}
+              <p className="text-xs text-gray-500 mt-2">💡 Assign editors after creating the project</p>
             </div>
           )}
           
